@@ -5,7 +5,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
-import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=e7c2a9f4';
+import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=f3b8d1a6';
 
 // ─── Zaza Woods Untergestell whitelist (user-supplied 2026-06-19) ───
 // model = { name, isWood }  → green card, clicking loads 3D model
@@ -116,6 +116,7 @@ const BEHANDLUNG_TEXTURE_MAP = {
 const ZW_LEG_MODEL_MAP = {
   'Spider Tischgestell (S)':                            { name: 'Matrix',          isWood: false },
   'Konisches Spidertischgestell':                       { name: 'Konische Spider', isWood: false },
+  'Konisches Spidertischgestell aus Eichenholz':        { name: 'Konische Spider', isWood: true  }, // wood = metal Konische Spider geometry + Eiche-Textur (2026-09-07)
   'Thorn Tischgestelle (Satz)':                         { name: 'Pedro',           isWood: false },
   'V Tischgestell':                                     { name: 'V-Form',          isWood: false },
   'X Tischgestell (Satz)':                              { name: 'X-Form',          isWood: false },
@@ -213,14 +214,19 @@ const CATALOG_ONLY_LEGS = [
   // confirmed by owner). Metal counterparts of catalog legs missing from the grid.
   { title: 'Aeris Tischgestell',            variantId: '53598108975370', price: 19500 },
   { title: 'Butterfly Tischgestell (Satz)', variantId: '53598132175114', price: 17500 },
-  { title: 'Vario Tischgestell',            variantId: '53598115856650', price: 24500 },
+  { title: 'Vario Tischgestell',            variantId: '53598115856650', price: 28500 },
   { title: 'Doppel V-Tischgestell',         variantId: '53598118412554', price: 22500 },
   { title: 'Felix Tischgestell',            variantId: '53598124540170', price: 22000 },
   // Konische Holzsäule — the conical column that hid inside Bootsform.glb under
   // the Ovale's mesh name. Own addon product (duplicate of Runde Holzsäule
   // 10399839781130, created 2026-08-31, product 10605388759306, 520 € surcharge
   // confirmed by owner). 3D: external GLB, see EXTERNAL_LEG_FILES.
-  { title: 'Konische Holzsäule aus Eichenholz', variantId: '53602745778442', price: 52000 }
+  { title: 'Konische Holzsäule aus Eichenholz', variantId: '53602745778442', price: 57500 },
+  // Konische Spider aus Eichenholz — wood version of the metal Konische Spider
+  // (own addon product 10611028459786, 595 € surcharge, created 2026-08-31).
+  // 3D: metal 'Konische Spider' geometry cloned to a wood leg (see
+  // metalToWoodClones in buildLegObjects) + Eiche-Textur.
+  { title: 'Konisches Spidertischgestell aus Eichenholz', variantId: '53632014811402', price: 59500 }
 ];
 
 
@@ -252,7 +258,7 @@ function findBaseVariant(product, shape, state) {
   return product.baseVariants.find(v => (v.opt1||'').startsWith(lenPrefix)) || product.baseVariants[0];
 }
 
-import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal } from './shopify.js?v=e7c2a9f4';
+import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal } from './shopify.js?v=f3b8d1a6';
 
 class TableConfigurator {
   constructor() {
@@ -1147,6 +1153,32 @@ class TableConfigurator {
           rawName: clonedObj.name,
           displayName: cloneName,
           isWood: false,
+          originalScale: clonedObj.scale.clone(),
+          originalPosition: clonedObj.position.clone(),
+          childOrigScales: clonedObj.children.map(ch => ch.scale.clone()),
+          geomCenterX: null
+        });
+      }
+    }
+
+    // Create wood clones of specified metal legs (reverse of woodToMetalClones).
+    // Konische Spider aus Eichenholz = the metal 'Konische Spider' geometry
+    // rendered with the Eiche wood material (applyActiveLegMaterial paints any
+    // leg.isWood=true leg with the tabletop wood via box-projected UVs).
+    const metalToWoodClones = ['Konische Spider'];
+    for (const cloneName of metalToWoodClones) {
+      const metalLeg = this.legObjects.find(l => l.displayName === cloneName && !l.isWood);
+      // Only clone if a wood twin doesn't already exist for this shape
+      if (metalLeg && !this.legObjects.some(l => l.displayName === cloneName && l.isWood)) {
+        const clonedObj = metalLeg.object.clone(true);
+        clonedObj.name = metalLeg.rawName + '_WOOD_clone';
+        clonedObj.visible = false;
+        model.add(clonedObj);
+        this.legObjects.push({
+          object: clonedObj,
+          rawName: clonedObj.name,
+          displayName: cloneName,
+          isWood: true,
           originalScale: clonedObj.scale.clone(),
           originalPosition: clonedObj.position.clone(),
           childOrigScales: clonedObj.children.map(ch => ch.scale.clone()),
