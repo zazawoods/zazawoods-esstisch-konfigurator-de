@@ -5,7 +5,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
-import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=d5f8a9b2';
+import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=e7c2a9f4';
 
 // ─── Zaza Woods Untergestell whitelist (user-supplied 2026-06-19) ───
 // model = { name, isWood }  → green card, clicking loads 3D model
@@ -126,7 +126,8 @@ const ZW_LEG_MODEL_MAP = {
   // Bootsform's internal 'Fluted' mesh is a different model (conical column).
   'Runde Holzsäule aus Stäbchenholz, Eiche':            { name: 'Wellen-Rund',     isWood: true  },
   'Ovale Tischgestelle aus Eiche-Stäbchenholz (Satz)':  { name: 'Wellen-Duo',      isWood: true  },
-  'Runde Holzsäule aus Eichenholz (Satz) (A)':          { name: 'Pilares',         isWood: true  },
+  'Runde Holzsäule aus Eichenholz (Satz)':              { name: 'Pilares',         isWood: true  },
+  'Runde Holzsäule aus Eichenholz (Satz) (A)':          { name: 'Pilares',         isWood: true  }, // legacy title (kept for old shared configs)
   // Halbrunde Tischbeine — removed model map so app uses the external GLB
   // (extracted from rectangle.glb) on ALL shapes. Ensures 1:1 with Rectangle.
   // 'Halbrunde Tischbeine aus Eichenholz (Satz) (A)':     { name: 'Hapa',            isWood: true  },
@@ -251,7 +252,7 @@ function findBaseVariant(product, shape, state) {
   return product.baseVariants.find(v => (v.opt1||'').startsWith(lenPrefix)) || product.baseVariants[0];
 }
 
-import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal } from './shopify.js?v=d5f8a9b2';
+import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal } from './shopify.js?v=e7c2a9f4';
 
 class TableConfigurator {
   constructor() {
@@ -3048,6 +3049,9 @@ class TableConfigurator {
     const leg = this.legObjects[this.activeLegIndex];
     if (!leg) return;
 
+    // Pilares draws its own columns outside leg.object — texture them too.
+    if (this._isPilares(leg)) this._pilaresApplyMaterial(leg);
+
     if (leg.isWood && this.topMaterial) {
       leg.object.traverse((child) => {
         if (child.isMesh) {
@@ -3349,6 +3353,120 @@ class TableConfigurator {
     return this.state.topThickness; // ceramic: 1.2 or 2
   }
 
+  // ── Pilares (Runde Holzsäule aus Eichenholz „Satz") custom column layout ──
+  // The GLB ships this leg as 4 fixed columns. The owner wants: round table = 3
+  // columns in a triangle; every other shape = 4 columns near the corners; all
+  // pulled a couple cm inside the tabletop edge. We hide the baked columns and
+  // draw our own upright oak cylinders, re-laid-out on every applyDimensions.
+  _isPilares(leg) {
+    if (!leg) return false;
+    const d = leg.displayName || '';
+    return d === 'Pilares' || /Runde Holzs(ä|a)ule aus Eichenholz \(Satz\)/i.test(d);
+  }
+
+  _pilaresEnsure(leg) {
+    if (leg._pilaresGroup && leg._pilaresGroup.parent === this.currentModel) return;
+    // Measure column radius + height from the baked meshes (world space).
+    leg.object.updateWorldMatrix(true, true);
+    let minY = 1e9, maxY = -1e9, minHalfX = 1e9;
+    const baked = [];
+    leg.object.traverse(m => {
+      if (!m.isMesh || !m.geometry) return;
+      baked.push(m);
+      m.geometry.computeBoundingBox();
+      const bb = m.geometry.boundingBox; if (!bb) return;
+      m.updateWorldMatrix(true, false);
+      const e = m.matrixWorld.elements;
+      let mnx = 1e9, mxx = -1e9;
+      for (const x of [bb.min.x, bb.max.x]) for (const y of [bb.min.y, bb.max.y]) for (const z of [bb.min.z, bb.max.z]) {
+        const wx = e[0]*x + e[4]*y + e[8]*z + e[12];
+        const wy = e[1]*x + e[5]*y + e[9]*z + e[13];
+        if (wx < mnx) mnx = wx; if (wx > mxx) mxx = wx;
+        if (wy < minY) minY = wy; if (wy > maxY) maxY = wy;
+      }
+      // each baked mesh = a pair of columns aligned on Z at one X → its X width
+      // is one column's diameter
+      minHalfX = Math.min(minHalfX, (mxx - mnx) / 2);
+    });
+    const radius = (isFinite(minHalfX) && minHalfX > 0.02 && minHalfX < 0.15) ? minHalfX : 0.069;
+    const height = (isFinite(maxY - minY) && maxY - minY > 0.3) ? (maxY - minY) : 0.725;
+    leg._pilaresSpec = { radius, height };
+    baked.forEach(m => { m.visible = false; });
+    // Draw our columns in MODEL space (currentModel keeps scale 1 in
+    // applyDimensions) — the leg wrapper's own parent carries a large scale,
+    // so we deliberately do NOT parent to it.
+    const grp = new THREE.Group();
+    grp.name = '__pilares_cols__';
+    this.currentModel.add(grp);
+    leg._pilaresGroup = grp;
+  }
+
+  _pilaresApplyMaterial(leg) {
+    const grp = leg._pilaresGroup;
+    if (!grp || !this.topMaterial || !leg.isWood) return;
+    grp.traverse(child => {
+      if (!child.isMesh) return;
+      const mat = this.topMaterial.clone();
+      mat.side = 2;
+      if (mat.map) {
+        mat.map = mat.map.clone();
+        mat.map.rotation = Math.PI / 2;
+        mat.map.center.set(0.5, 0.5);
+        mat.map.repeat.set(1, 1);
+        mat.map.needsUpdate = true;
+      }
+      this.remapLegUVsBoxProjection(child);
+      child.material = mat;
+    });
+  }
+
+  _pilaresLayout(shape, halfX, halfZ, r) {
+    const insetM = 0.03; // gap between column surface and tabletop edge
+    const curved = ['round', 'oval', 'danish-oval', 'halboval', 'organic', 'kiezel', 'halfrond', 'boogvorm'].includes(shape.id);
+    // Column-CENTER distance from table centre. Pull curved shapes in a bit more
+    // so the corner legs stay under the rounded outline instead of poking out.
+    const aX = Math.max(0.15, (halfX - r - insetM) * (curved ? 0.90 : 0.95));
+    const aZ = Math.max(0.10, (halfZ - r - insetM) * (curved ? 0.86 : 0.95));
+    if (shape.id === 'round') {
+      // equilateral-ish triangle: one column at the front (+Z), two at the back
+      return [ { x: 0, z: aZ }, { x: -aX * 0.866, z: -aZ * 0.5 }, { x: aX * 0.866, z: -aZ * 0.5 } ];
+    }
+    return [ { x: aX, z: aZ }, { x: -aX, z: aZ }, { x: aX, z: -aZ }, { x: -aX, z: -aZ } ];
+  }
+
+  _pilaresUpdate(leg, shape) {
+    this._pilaresEnsure(leg);
+    const spec = leg._pilaresSpec;
+    const grp = leg._pilaresGroup;
+    // Only the active leg is drawn; hide our columns otherwise.
+    if (this.legObjects[this.activeLegIndex] !== leg) { grp.visible = false; return; }
+    // clear previous clones
+    while (grp.children.length) { const c = grp.children.pop(); if (c.geometry) c.geometry.dispose(); }
+    // Tabletop world half-extents = base tabletop box × current dimension scale
+    // (robust; avoids picking up hidden/baked leg geometry). Model is centred at
+    // origin, so the tabletop centre is ~ (0,0) in world X/Z.
+    const scaleX = this.state.length / shape.defaultLength;
+    const scaleZ = this.state.width / shape.defaultWidth;
+    const halfX = (this.baseBBox.size.x * scaleX) / 2;
+    const halfZ = (this.baseBBox.size.z * scaleZ) / 2;
+    const ctrX = 0, ctrZ = 0;
+    const positions = this._pilaresLayout(shape, halfX, halfZ, spec.radius);
+    // grp is a child of currentModel (scale 1). Convert desired WORLD coords to
+    // model-local: subtract the model's own position (feet at world y=0).
+    const mp = this.currentModel.position;
+    for (const p of positions) {
+      const geo = new THREE.CylinderGeometry(spec.radius, spec.radius, spec.height, 28);
+      geo.translate(0, spec.height / 2, 0);
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xc9b48a }));
+      mesh.name = 'pilarcol';
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      mesh.position.set((ctrX + p.x) - mp.x, -mp.y, (ctrZ + p.z) - mp.z);
+      grp.add(mesh);
+    }
+    grp.visible = true;
+    this._pilaresApplyMaterial(leg);
+  }
+
   applyDimensions() {
     if (!this.currentModel || !this.baseBBox) return;
     const shape = TABLE_SHAPES.find(s => s.id === this.state.shape);
@@ -3440,6 +3558,12 @@ class TableConfigurator {
 
     this.legObjects.forEach(leg => {
       if (!leg.originalScale) return;
+
+      // Pilares (Runde Holzsäule aus Eichenholz Satz): custom multi-column layout
+      // — 3 columns in a triangle on round tables, 4 near the corners on the
+      // rest, all inset a little from the tabletop edge. Handled entirely by
+      // _pilaresUpdate; skip the normal set-leg reset/positioning for it.
+      if (this._isPilares(leg)) { this._pilaresUpdate(leg, shape); return; }
 
       // Reset wrapper to original GLB transform
       leg.object.scale.copy(leg.originalScale);
