@@ -5,7 +5,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
-import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=f3b8d1a6';
+import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=cb6536a0';
 
 // ─── Zaza Woods Untergestell whitelist (user-supplied 2026-06-19) ───
 // model = { name, isWood }  → green card, clicking loads 3D model
@@ -76,6 +76,10 @@ async function loadZWProducts() {
       console.log('[ZW] per-handle product data loaded', Object.keys(ZW_PRODUCTS_BY_HANDLE).length);
     }
   } catch (e) { console.warn('[ZW] could not load zw-products-by-handle.json', e); }
+  // Overlay live shop prices (non-blocking: on failure the bundled prices stay).
+  try {
+    ZW_LIVE_PRICES = await fetchLivePrices();
+  } catch (e) { ZW_LIVE_PRICES = ZW_LIVE_PRICES || {}; }
   return ZW_PRODUCTS_DATA;
 }
 
@@ -258,7 +262,29 @@ function findBaseVariant(product, shape, state) {
   return product.baseVariants.find(v => (v.opt1||'').startsWith(lenPrefix)) || product.baseVariants[0];
 }
 
-import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal } from './shopify.js?v=f3b8d1a6';
+import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal, fetchLivePrices } from './shopify.js?v=cb6536a0';
+
+// Live shop prices (variantId → { p: priceCents, c?: compareAtCents }), loaded
+// from /api/live-prices at startup. Null until loaded; empty {} if unavailable.
+let ZW_LIVE_PRICES = null;
+// Return the live price (cents) for a variant if we have one, else the bundled
+// fallback. Keeps the configurator in sync with Shopify with no redeploy.
+function livePrice(variantId, fallbackCents) {
+  if (ZW_LIVE_PRICES && variantId != null) {
+    const e = ZW_LIVE_PRICES[String(variantId)];
+    if (e && typeof e.p === 'number') return e.p;
+  }
+  return fallbackCents;
+}
+// Live compare-at (was-)price in cents for a variant, or null. Used to show a
+// struck-through original price when a scheduled sale is running in the shop.
+function liveCompareAt(variantId) {
+  if (ZW_LIVE_PRICES && variantId != null) {
+    const e = ZW_LIVE_PRICES[String(variantId)];
+    if (e && typeof e.c === 'number' && typeof e.p === 'number' && e.c > e.p) return e.c;
+  }
+  return null;
+}
 
 class TableConfigurator {
   constructor() {
@@ -373,21 +399,8 @@ class TableConfigurator {
         }
       }
     }
-    // Product-page arrivals with 180cm: open at 220cm instead — at 180 many
-    // Satz legs are hidden, at 220 the customer sees the full range. They can
-    // switch back to 180 themselves (the size stays available).
-    if (params.has('product') && parseInt(params.get('length')) === 180) {
-      const shp220 = TABLE_SHAPES.find(sh => sh.id === this.state.shape);
-      if (shp220) {
-        if (Array.isArray(shp220.fixedDimensions) && shp220.fixedDimensions.length) {
-          const dim = shp220.fixedDimensions.find(d => d[0] === 220);
-          if (dim) { this.state.length = dim[0]; this.state.width = dim[1]; }
-        } else if ((shp220.lengths || []).includes(220)) {
-          this.state.length = 220;
-          if (shp220.lockAspect) this.state.width = 220;
-        }
-      }
-    }
+    // (Removed 2026-09-09) Product-page arrivals now open at the exact size the
+    // customer selected on the product page — no longer forced to 220cm.
     if (params.has('edge')) {
       const edgeId = params.get('edge');
       const eq = (a, b) => a.toLowerCase().trim() === b.toLowerCase().trim();
@@ -6266,22 +6279,32 @@ class TableConfigurator {
     }
     const product = ZW_PRODUCTS_DATA && ZW_PRODUCTS_DATA[this.state.shape];
     let total = 0;
+    // Running "was" total (sum of live compare-at prices where a variant is on
+    // sale, else its normal price). If it ends up higher than `total`, the shop
+    // has a scheduled sale and we show the struck-through original.
+    let compareTotal = 0;
+    const addLine = (variantId, cents) => {
+      const p = livePrice(variantId, cents);
+      total += p;
+      const c = liveCompareAt(variantId);
+      compareTotal += (c != null ? c : p);
+    };
     let priceIsFresh = false;
     if (product) {
       const baseVariant = findBaseVariant(product, this.state.shape, this.state);
-      total = baseVariant ? baseVariant.price : 0;
+      if (baseVariant) addLine(baseVariant.id, baseVariant.price);
       const edgeTitles = EDGE_TITLE_MAP[this.state.edge] || [];
       const edgeAddon = product.addons.Kantenbearbeitung.find(a => edgeTitles.includes(a.title));
-      if (edgeAddon) total += edgeAddon.price;
+      if (edgeAddon) addLine(edgeAddon.variantId, edgeAddon.price);
       let legAddon = null;
       if (this.state.zwLegName) {
         legAddon = product.addons.Tischgestell.find(a => a.title === this.state.zwLegName);
-        if (legAddon) total += legAddon.price;
+        if (legAddon) addLine(legAddon.variantId, legAddon.price);
       }
       // Catalog-only legs (standalone purchases) — add their full catalog price too
       if (!legAddon && this.state.zwLegName) {
         const catLeg = CATALOG_ONLY_LEGS.find(c => c.title === this.state.zwLegName);
-        if (catLeg) { legAddon = { variantId: catLeg.variantId, price: catLeg.price }; total += catLeg.price; }
+        if (catLeg) { legAddon = { variantId: catLeg.variantId, price: catLeg.price }; addLine(catLeg.variantId, catLeg.price); }
       }
       // Union fallback (audit 2026-08-30): the grid is the UNION of all shapes'
       // Tischgestell addons, but some shape products (e.g. Oval) don't carry
@@ -6293,7 +6316,7 @@ class TableConfigurator {
         for (const otherShape of Object.keys(ZW_PRODUCTS_DATA)) {
           const a = ZW_PRODUCTS_DATA[otherShape]?.addons?.Tischgestell?.find(
             x => x.title === this.state.zwLegName);
-          if (a) { legAddon = a; total += a.price; break; }
+          if (a) { legAddon = a; addLine(a.variantId, a.price); break; }
         }
       }
       // Preserve any already-picked Behandlung variant. If none yet (URL-init
@@ -6314,7 +6337,7 @@ class TableConfigurator {
       if (this._behandlungIncluded) {
         behandlungVariant = null;
       } else if (behandlungAddon && behandlungAddon.price) {
-        total += behandlungAddon.price;
+        addLine(behandlungAddon.variantId, behandlungAddon.price);
       }
       this._selectedVariants = {
         base: baseVariant?.id,
@@ -6323,6 +6346,7 @@ class TableConfigurator {
         behandlung: behandlungVariant
       };
       total = total / 100; // ZW data is in cents; formatPrice expects EUR units
+      compareTotal = compareTotal / 100;
       priceIsFresh = total > 0;
     }
     // If we couldn't compute a fresh total (ZW data missing / shape unknown),
@@ -6336,16 +6360,26 @@ class TableConfigurator {
     } else {
       setCachedTotal(total);
     }
+    // Show a struck-through original only for a genuine shop sale (live
+    // compare-at total meaningfully above the live total).
+    const wasPrice = (priceIsFresh && compareTotal > displayTotal + 0.5) ? compareTotal : null;
     const priceEl = document.getElementById('total-price');
     const priceMobileEl = document.getElementById('total-price-mobile');
+    const fmt = (v) => '\u20ac ' + new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 }).format(Math.round(v));
     const setPrice = (el, value, empty) => {
       if (!el) return;
       if (value > 0) {
-        // Same format as the picnic configurator: "€ 1.299"
-        el.textContent = '\u20ac ' + new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 }).format(Math.round(value));
+        if (wasPrice) {
+          el.innerHTML = '<span class="price-was">' + fmt(wasPrice) + '</span> ' + fmt(value);
+          el.classList.add('price-sale');
+        } else {
+          el.textContent = fmt(value);
+          el.classList.remove('price-sale');
+        }
         el.classList.toggle('price-loading', isStale);
       } else {
         el.textContent = empty;
+        el.classList.remove('price-sale');
         el.classList.add('price-loading');
       }
     };

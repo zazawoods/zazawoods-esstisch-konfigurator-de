@@ -54,3 +54,33 @@ export function formatPrice(amount) {
     maximumFractionDigits: 0
   }).format(amount);
 }
+
+// ─── Live price sync ──────────────────────────────────────────────────────
+// Pulls the current shop prices from our own server (/api/live-prices), which
+// mirrors the live storefront /products.json every few minutes. Returns a map
+// variantId(string) → { p: priceCents, c?: compareAtCents }. On any failure it
+// falls back to the last map cached in localStorage, and finally to {} (so the
+// bundled zw-products.json prices are used unchanged — no regression).
+//
+// NOTE: Shopify *automatic* cart discounts do NOT appear in /products.json, so
+// they cannot be reflected here; only the regular price and scheduled-sale
+// compare_at_price are visible.
+const LIVE_PRICES_KEY = 'zw_live_prices_v1';
+export async function fetchLivePrices() {
+  try {
+    const r = await fetch('/api/live-prices', { cache: 'no-store' });
+    if (r.ok) {
+      const j = await r.json();
+      if (j && j.prices && Object.keys(j.prices).length) {
+        try { localStorage.setItem(LIVE_PRICES_KEY, JSON.stringify(j.prices)); } catch (e) {}
+        console.log('[ZW] live prices loaded', Object.keys(j.prices).length, 'variants; updated', j.updatedAt);
+        return j.prices;
+      }
+    }
+  } catch (e) { console.warn('[ZW] live-prices fetch failed', e); }
+  try {
+    const raw = localStorage.getItem(LIVE_PRICES_KEY);
+    if (raw) { const m = JSON.parse(raw); if (m && typeof m === 'object') return m; }
+  } catch (e) {}
+  return {};
+}
