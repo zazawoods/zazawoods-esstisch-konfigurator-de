@@ -208,6 +208,79 @@ app.get('/api/icons', async (req, res) => {
   } catch { return res.status(200).json({ icons: [] }); }
 });
 
+// ─── Live price sync ───────────────────────────────────────────────────────
+// The configurator ships bundled prices in zw-products.json. Those can drift
+// from Shopify whenever the owner edits a price. This endpoint mirrors the live
+// storefront catalogue (/products.json) server-side into a variantId→price map,
+// cached for LIVE_PRICE_TTL, so the configurator always shows the current shop
+// price with NO redeploy. The client (shopify.js → app.js) overlays it onto the
+// bundled prices; if this endpoint is ever unreachable the bundled prices are
+// used unchanged (no regression).
+//
+// LIMITATION: Shopify *automatic* cart discounts (e.g. a "HERBST-SPECIAL" applied
+// at checkout) are NOT part of /products.json and cannot be surfaced here. Only
+// the regular price and, for a *scheduled sale*, compare_at_price are visible.
+const SHOP_ORIGIN = process.env.SHOP_ORIGIN || 'https://zazawoods.de';
+const LIVE_PRICE_TTL = 5 * 60 * 1000; // 5 minutes
+let _livePriceCache = { at: 0, data: null, updatedAt: null };
+
+// Fetch JSON with global fetch (Node ≥18) or a plain https fallback.
+function fetchJSON(url) {
+  if (typeof fetch === 'function') {
+    return fetch(url, { headers: { 'Accept': 'application/json', 'User-Agent': 'zw-configurator-pricesync/1.0' } })
+      .then(r => (r.ok ? r.json() : null));
+  }
+  return new Promise((resolve) => {
+    try {
+      const https = require('https');
+      https.get(url, { headers: { 'Accept': 'application/json', 'User-Agent': 'zw-configurator-pricesync/1.0' } }, (r) => {
+        if (r.statusCode !== 200) { r.resume(); return resolve(null); }
+        let buf = '';
+        r.setEncoding('utf8');
+        r.on('data', (c) => { buf += c; if (buf.length > 12 * 1024 * 1024) r.destroy(); });
+        r.on('end', () => { try { resolve(JSON.parse(buf)); } catch (e) { resolve(null); } });
+      }).on('error', () => resolve(null));
+    } catch (e) { resolve(null); }
+  });
+}
+
+async function buildLivePriceMap() {
+  const out = {};
+  for (let page = 1; page <= 6; page++) {
+    let json = null;
+    try { json = await fetchJSON(`${SHOP_ORIGIN}/products.json?limit=250&page=${page}`); }
+    catch (e) { break; }
+    const products = (json && json.products) || [];
+    if (!products.length) break;
+    for (const p of products) {
+      for (const v of (p.variants || [])) {
+        const cents = Math.round(parseFloat(v.price) * 100);
+        if (!Number.isFinite(cents) || cents <= 0) continue;
+        const cmp = v.compare_at_price ? Math.round(parseFloat(v.compare_at_price) * 100) : null;
+        out[String(v.id)] = (cmp && cmp > cents) ? { p: cents, c: cmp } : { p: cents };
+      }
+    }
+    if (products.length < 250) break;
+  }
+  return out;
+}
+
+app.get('/api/live-prices', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const now = Date.now();
+  const stale = !_livePriceCache.data || (now - _livePriceCache.at) > LIVE_PRICE_TTL;
+  if (stale || req.query.force === '1') {
+    try {
+      const data = await buildLivePriceMap();
+      if (data && Object.keys(data).length) {
+        _livePriceCache = { at: now, data, updatedAt: new Date().toISOString() };
+      }
+    } catch (e) { /* keep whatever we have */ }
+  }
+  if (!_livePriceCache.data) return res.status(200).json({ updatedAt: null, prices: {} });
+  return res.status(200).json({ updatedAt: _livePriceCache.updatedAt, prices: _livePriceCache.data });
+});
+
 // Serve static files from /configurator (HTML/CSS/JS: no-cache, must revalidate every request).
 // Mounted at BOTH "/" and "/configurator": index.html has <base href="/configurator/">, so the
 // app requests /configurator/css/..., /configurator/js/..., while /ar.html & friends live at root.
