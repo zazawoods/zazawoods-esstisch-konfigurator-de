@@ -1114,6 +1114,19 @@ body {
   color: var(--color-text-light);
 }
 
+/* Sale display: struck-through original before the current price. */
+.price-was {
+  text-decoration: line-through;
+  color: var(--color-text-light);
+  font-weight: 400;
+  margin-right: 4px;
+  opacity: 0.75;
+}
+#total-price.price-sale,
+#total-price-mobile.price-sale {
+  color: #c0392b;
+}
+
 .free-shipping {
   font-family: var(--font);
   font-size: 11px;
