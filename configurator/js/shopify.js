@@ -47,11 +47,9 @@ export function getLineItems() { return []; }
 export async function addToCart() { return; }
 
 export function formatPrice(amount) {
-  return new Intl.NumberFormat('de-DE', {
-    style: 'currency',
-    currency: 'EUR',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0
+  return '€ ' + new Intl.NumberFormat('de-DE', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
   }).format(amount);
 }
 
