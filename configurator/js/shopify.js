@@ -64,21 +64,28 @@ export function formatPrice(amount) {
 // they cannot be reflected here; only the regular price and scheduled-sale
 // compare_at_price are visible.
 const LIVE_PRICES_KEY = 'zw_live_prices_v1';
+// Returns { prices, discountPct }. prices: variantId → { p, c? } in cents.
+// discountPct: current storefront discount fraction (0–1) applied to base tables.
 export async function fetchLivePrices() {
   try {
     const r = await fetch('/api/live-prices', { cache: 'no-store' });
     if (r.ok) {
       const j = await r.json();
       if (j && j.prices && Object.keys(j.prices).length) {
-        try { localStorage.setItem(LIVE_PRICES_KEY, JSON.stringify(j.prices)); } catch (e) {}
-        console.log('[ZW] live prices loaded', Object.keys(j.prices).length, 'variants; updated', j.updatedAt);
-        return j.prices;
+        const payload = { prices: j.prices, discountPct: Number(j.discountPct) || 0 };
+        try { localStorage.setItem(LIVE_PRICES_KEY, JSON.stringify(payload)); } catch (e) {}
+        console.log('[ZW] live prices loaded', Object.keys(j.prices).length, 'variants; discount', payload.discountPct, '; updated', j.updatedAt);
+        return payload;
       }
     }
   } catch (e) { console.warn('[ZW] live-prices fetch failed', e); }
   try {
     const raw = localStorage.getItem(LIVE_PRICES_KEY);
-    if (raw) { const m = JSON.parse(raw); if (m && typeof m === 'object') return m; }
+    if (raw) {
+      const m = JSON.parse(raw);
+      if (m && m.prices) return { prices: m.prices, discountPct: Number(m.discountPct) || 0 };
+      if (m && typeof m === 'object') return { prices: m, discountPct: 0 }; // legacy cache shape
+    }
   } catch (e) {}
-  return {};
+  return { prices: {}, discountPct: 0 };
 }
