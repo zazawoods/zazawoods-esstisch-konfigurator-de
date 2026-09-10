@@ -221,8 +221,17 @@ app.get('/api/icons', async (req, res) => {
 // at checkout) are NOT part of /products.json and cannot be surfaced here. Only
 // the regular price and, for a *scheduled sale*, compare_at_price are visible.
 const SHOP_ORIGIN = process.env.SHOP_ORIGIN || 'https://zazawoods.de';
+// Reference table products used to read the CURRENT storefront discount %. The
+// theme renders a struck-through regular price + a sale price (its
+// "offer-price-identifier"); we parse regular vs sale to recover the live % so
+// the configurator can show the same "was → now" as the product pages. The
+// automatic discount applies to TABLE collections only (not leg/edge addons),
+// so only the base-table line is discounted — matching the shop & checkout.
+const REF_PRODUCT_HANDLES = (process.env.REF_PRODUCT_HANDLES ||
+  'rechteckiger-esstisch-milano-aus-massiver-eichenholz-mit-baumstammkanten,bootsform-esstisch-sergio-aus-massivem-eichenholz,ovaler-esstisch-danilo-aus-massiver-eichenholz-mit-schweizer-kante'
+).split(',').map(s => s.trim()).filter(Boolean);
 const LIVE_PRICE_TTL = 5 * 60 * 1000; // 5 minutes
-let _livePriceCache = { at: 0, data: null, updatedAt: null };
+let _livePriceCache = { at: 0, data: null, updatedAt: null, discountPct: 0 };
 
 // Fetch JSON with global fetch (Node ≥18) or a plain https fallback.
 function fetchJSON(url) {
@@ -242,6 +251,48 @@ function fetchJSON(url) {
       }).on('error', () => resolve(null));
     } catch (e) { resolve(null); }
   });
+}
+
+// Fetch a URL as text (for parsing the rendered product page).
+function fetchText(url) {
+  if (typeof fetch === 'function') {
+    return fetch(url, { headers: { 'Accept': 'text/html', 'User-Agent': 'zw-configurator-pricesync/1.0' } })
+      .then(r => (r.ok ? r.text() : null));
+  }
+  return new Promise((resolve) => {
+    try {
+      const https = require('https');
+      https.get(url, { headers: { 'Accept': 'text/html', 'User-Agent': 'zw-configurator-pricesync/1.0' } }, (r) => {
+        if (r.statusCode !== 200) { r.resume(); return resolve(null); }
+        let buf = '';
+        r.setEncoding('utf8');
+        r.on('data', (c) => { buf += c; if (buf.length > 8 * 1024 * 1024) r.destroy(); });
+        r.on('end', () => resolve(buf));
+      }).on('error', () => resolve(null));
+    } catch (e) { resolve(null); }
+  });
+}
+
+// Read the current storefront discount fraction (0–1) by comparing the theme's
+// struck-through regular price and its sale price on a reference table page.
+// Returns 0 when no sale is shown (promo off) or nothing could be parsed.
+async function detectDiscountPct() {
+  const numAt = (s) => {
+    const m = s && s.match(/([0-9][0-9.]*),([0-9]{2})/);
+    return m ? parseFloat(m[1].replace(/\./g, '') + '.' + m[2]) : null;
+  };
+  for (const handle of REF_PRODUCT_HANDLES) {
+    let html = null;
+    try { html = await fetchText(`${SHOP_ORIGIN}/products/${handle}`); } catch (e) { continue; }
+    if (!html) continue;
+    const regM = html.match(/price-item--regular[^>]*>[\s\S]{0,60}/);
+    const saleM = html.match(/price-item--sale[^>]*>[\s\S]{0,60}/);
+    const reg = regM ? numAt(regM[0]) : null;
+    const sale = saleM ? numAt(saleM[0]) : null;
+    if (reg && sale && sale < reg) return Math.round((1 - sale / reg) * 10000) / 10000;
+    if (reg && sale && sale >= reg) return 0; // page parsed, but no discount
+  }
+  return 0;
 }
 
 async function buildLivePriceMap() {
@@ -273,12 +324,18 @@ app.get('/api/live-prices', async (req, res) => {
     try {
       const data = await buildLivePriceMap();
       if (data && Object.keys(data).length) {
-        _livePriceCache = { at: now, data, updatedAt: new Date().toISOString() };
+        let discountPct = 0;
+        try { discountPct = await detectDiscountPct(); } catch (e) { discountPct = 0; }
+        _livePriceCache = { at: now, data, updatedAt: new Date().toISOString(), discountPct };
       }
     } catch (e) { /* keep whatever we have */ }
   }
-  if (!_livePriceCache.data) return res.status(200).json({ updatedAt: null, prices: {} });
-  return res.status(200).json({ updatedAt: _livePriceCache.updatedAt, prices: _livePriceCache.data });
+  if (!_livePriceCache.data) return res.status(200).json({ updatedAt: null, prices: {}, discountPct: 0 });
+  return res.status(200).json({
+    updatedAt: _livePriceCache.updatedAt,
+    prices: _livePriceCache.data,
+    discountPct: _livePriceCache.discountPct || 0
+  });
 });
 
 // Serve static files from /configurator (HTML/CSS/JS: no-cache, must revalidate every request).
