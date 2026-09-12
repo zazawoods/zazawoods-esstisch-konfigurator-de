@@ -5,7 +5,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
-import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=306caa9d';
+import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=b096222c';
 
 // ─── Zaza Woods Untergestell whitelist (user-supplied 2026-06-19) ───
 // model = { name, isWood }  → green card, clicking loads 3D model
@@ -264,7 +264,7 @@ function findBaseVariant(product, shape, state) {
   return product.baseVariants.find(v => (v.opt1||'').startsWith(lenPrefix)) || product.baseVariants[0];
 }
 
-import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal, fetchLivePrices } from './shopify.js?v=306caa9d';
+import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal, fetchLivePrices } from './shopify.js?v=b096222c';
 
 // Live shop prices (variantId → { p: priceCents, c?: compareAtCents }), loaded
 // from /api/live-prices at startup. Null until loaded; empty {} if unavailable.
@@ -3482,8 +3482,11 @@ class TableConfigurator {
     const aX = Math.max(0.15, (halfX - r - insetM) * (curved ? 0.90 : 0.95));
     const aZ = Math.max(0.10, (halfZ - r - insetM) * (curved ? 0.86 : 0.95));
     if (shape.id === 'round') {
-      // equilateral-ish triangle: one column at the front (+Z), two at the back
-      return [ { x: 0, z: aZ }, { x: -aX * 0.866, z: -aZ * 0.5 }, { x: aX * 0.866, z: -aZ * 0.5 } ];
+      // equilateral-ish triangle: one column at the front (+Z), two at the back.
+      // Extra inward pull (owner request 2026-09-12) so the 3 columns sit clearly
+      // further in from the tabletop edge.
+      const k = 0.80;
+      return [ { x: 0, z: aZ * k }, { x: -aX * 0.866 * k, z: -aZ * 0.5 * k }, { x: aX * 0.866 * k, z: -aZ * 0.5 * k } ];
     }
     return [ { x: aX, z: aZ }, { x: -aX, z: aZ }, { x: aX, z: -aZ }, { x: -aX, z: -aZ } ];
   }
