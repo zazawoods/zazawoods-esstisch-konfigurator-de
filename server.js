@@ -217,9 +217,8 @@ app.get('/api/icons', async (req, res) => {
 // bundled prices; if this endpoint is ever unreachable the bundled prices are
 // used unchanged (no regression).
 //
-// LIMITATION: Shopify *automatic* cart discounts (e.g. a "HERBST-SPECIAL" applied
-// at checkout) are NOT part of /products.json and cannot be surfaced here. Only
-// the regular price and, for a *scheduled sale*, compare_at_price are visible.
+// Automatic cart discounts (e.g. "HERBST-SPECIAL") are read from a throw-away
+// Ajax cart (detectDiscountPctFromCart) — see /api/live-prices discountPct.
 const SHOP_ORIGIN = process.env.SHOP_ORIGIN || 'https://zazawoods.de';
 // Reference table products used to read the CURRENT storefront discount %. The
 // theme renders a struck-through regular price + a sale price (its
@@ -273,10 +272,63 @@ function fetchText(url) {
   });
 }
 
+// Read the CURRENT automatic discount the shop really applies, by putting a
+// reference table into a throw-away cart (Shopify Ajax API, cookie-scoped —
+// touches no customer) and reading the discount allocation from /cart.js.
+// This is exactly what the checkout charges, independent of how the theme
+// renders prices, so the configurator can never show a promo the shop no
+// longer gives (or miss one it does). Returns null when the check fails.
+async function detectDiscountPctFromCart() {
+  if (typeof fetch !== 'function') return null;
+  const UA = 'zw-configurator-pricesync/1.0';
+  // Reference variant: first variant of the first reachable reference product.
+  let variantId = null;
+  for (const handle of REF_PRODUCT_HANDLES) {
+    const p = await fetchJSON(`${SHOP_ORIGIN}/products/${handle}.js`).catch(() => null);
+    const v = p && p.variants && p.variants.find(x => x.available) || (p && p.variants && p.variants[0]);
+    if (v && v.id) { variantId = v.id; break; }
+  }
+  if (!variantId) return null;
+  const cookieJar = {};
+  const absorb = (res) => {
+    let list = [];
+    try { list = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : []; } catch (e) {}
+    if (!list.length) { const raw = res.headers.get('set-cookie'); if (raw) list = raw.split(/,(?=\s*[A-Za-z0-9_-]+=)/); }
+    list.forEach((c) => { const m = /^\s*([^=;]+)=([^;]*)/.exec(c); if (m) cookieJar[m[1]] = m[2]; });
+  };
+  const cookieHeader = () => Object.entries(cookieJar).map(([k, v]) => `${k}=${v}`).join('; ');
+  try {
+    const add = await fetch(`${SHOP_ORIGIN}/cart/add.js`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': UA },
+      body: JSON.stringify({ items: [{ id: variantId, quantity: 1 }] })
+    });
+    absorb(add);
+    if (!add.ok) return null;
+    const cartRes = await fetch(`${SHOP_ORIGIN}/cart.js`, { headers: { 'Accept': 'application/json', 'User-Agent': UA, 'Cookie': cookieHeader() } });
+    absorb(cartRes);
+    if (!cartRes.ok) return null;
+    const cart = await cartRes.json();
+    const item = cart && cart.items && cart.items.find(i => i.variant_id === variantId || i.id === variantId);
+    // Tidy up the throw-away cart (best effort).
+    fetch(`${SHOP_ORIGIN}/cart/clear.js`, { method: 'POST', headers: { 'User-Agent': UA, 'Cookie': cookieHeader() } }).catch(() => {});
+    if (!item) return null;
+    const orig = Number(item.original_line_price != null ? item.original_line_price : item.line_price);
+    const fin = Number(item.final_line_price != null ? item.final_line_price : item.line_price);
+    if (!(orig > 0) || !(fin >= 0)) return null;
+    const pct = Math.round((1 - fin / orig) * 10000) / 10000;
+    return pct > 0 && pct < 1 ? pct : 0;
+  } catch (e) { return null; }
+}
+
 // Read the current storefront discount fraction (0–1) by comparing the theme's
 // struck-through regular price and its sale price on a reference table page.
 // Returns 0 when no sale is shown (promo off) or nothing could be parsed.
-async function detectDiscountPct() {
+// NOTE: this is only the FALLBACK — the theme's "offer" display is a manual
+// setting and can be out of sync with the real automatic discount (2026-10-01:
+// promo expired on 30.09 but the theme kept showing -10 %). The cart check
+// above is the source of truth.
+async function detectDiscountPctFromPage() {
   const numAt = (s) => {
     const m = s && s.match(/([0-9][0-9.]*),([0-9]{2})/);
     return m ? parseFloat(m[1].replace(/\./g, '') + '.' + m[2]) : null;
@@ -293,6 +345,13 @@ async function detectDiscountPct() {
     if (reg && sale && sale >= reg) return 0; // page parsed, but no discount
   }
   return 0;
+}
+
+// Live discount: real cart first, theme markup only as fallback.
+async function detectDiscountPct() {
+  const fromCart = await detectDiscountPctFromCart();
+  if (fromCart !== null) return fromCart;
+  return detectDiscountPctFromPage();
 }
 
 async function buildLivePriceMap() {
