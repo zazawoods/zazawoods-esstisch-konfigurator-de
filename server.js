@@ -229,7 +229,7 @@ const SHOP_ORIGIN = process.env.SHOP_ORIGIN || 'https://zazawoods.de';
 const REF_PRODUCT_HANDLES = (process.env.REF_PRODUCT_HANDLES ||
   'rechteckiger-esstisch-milano-aus-massiver-eichenholz-mit-baumstammkanten,bootsform-esstisch-sergio-aus-massivem-eichenholz,ovaler-esstisch-danilo-aus-massiver-eichenholz-mit-schweizer-kante'
 ).split(',').map(s => s.trim()).filter(Boolean);
-const LIVE_PRICE_TTL = 5 * 60 * 1000; // 5 minutes
+const LIVE_PRICE_TTL = 60 * 1000; // 1 minute on demand; also refreshed in the background (refreshLivePrices)
 let _livePriceCache = { at: 0, data: null, updatedAt: null, discountPct: 0 };
 
 // Fetch JSON with global fetch (Node ≥18) or a plain https fallback.
@@ -375,20 +375,57 @@ async function buildLivePriceMap() {
   return out;
 }
 
+// ─── Automatic, robust refresh (2026-10-18) ────────────────────────────────
+// The owner switches automatic discounts on/off in Shopify without touching
+// this app, so the cache must follow the shop by itself:
+//  • refreshed in the background every minute (plus on demand when stale),
+//  • the cart check gets 3 attempts; a transient failure (rate limit, bot
+//    check, network hiccup) is NOT turned into "no discount" — the last known
+//    value is kept until the next successful read,
+//  • every change is logged ([live-prices] …) so it can be traced in Railway.
+let _refreshing = null;
+async function detectDiscountPctRobust() {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let v = null;
+    try { v = await detectDiscountPctFromCart(); } catch (e) { v = null; }
+    if (v !== null) return v;
+    await new Promise((r) => setTimeout(r, 1500 * attempt));
+  }
+  return null;
+}
+async function refreshLivePrices(reason) {
+  if (_refreshing) return _refreshing;
+  _refreshing = (async () => {
+    const prev = _livePriceCache;
+    let data = null;
+    try { data = await buildLivePriceMap(); } catch (e) { data = null; }
+    let discountPct = await detectDiscountPctRobust();
+    let source = 'cart';
+    if (discountPct === null) {
+      if (prev.data) { discountPct = prev.discountPct || 0; source = 'kept-previous'; }
+      else { try { discountPct = await detectDiscountPctFromPage(); } catch (e) { discountPct = 0; } source = 'page-fallback'; }
+    }
+    if (data && Object.keys(data).length) {
+      _livePriceCache = { at: Date.now(), data, updatedAt: new Date().toISOString(), discountPct };
+    } else if (prev.data) {
+      _livePriceCache = { at: Date.now(), data: prev.data, updatedAt: new Date().toISOString(), discountPct };
+    }
+    if (source !== 'cart' || (prev.discountPct || 0) !== discountPct || !prev.data) {
+      console.log(`[live-prices] ${reason}: discount ${discountPct} (${source}), variants ${data ? Object.keys(data).length : 'unchanged'}`);
+    }
+  })().catch(() => {}).finally(() => { _refreshing = null; });
+  return _refreshing;
+}
+// Warm up at boot and keep fresh in the background.
+refreshLivePrices('boot');
+const _liveTimer = setInterval(() => refreshLivePrices('timer'), 60 * 1000);
+if (_liveTimer.unref) _liveTimer.unref();
+
 app.get('/api/live-prices', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const now = Date.now();
   const stale = !_livePriceCache.data || (now - _livePriceCache.at) > LIVE_PRICE_TTL;
-  if (stale || req.query.force === '1') {
-    try {
-      const data = await buildLivePriceMap();
-      if (data && Object.keys(data).length) {
-        let discountPct = 0;
-        try { discountPct = await detectDiscountPct(); } catch (e) { discountPct = 0; }
-        _livePriceCache = { at: now, data, updatedAt: new Date().toISOString(), discountPct };
-      }
-    } catch (e) { /* keep whatever we have */ }
-  }
+  if (stale || req.query.force === '1') await refreshLivePrices(req.query.force === '1' ? 'force' : 'request');
   if (!_livePriceCache.data) return res.status(200).json({ updatedAt: null, prices: {}, discountPct: 0 });
   return res.status(200).json({
     updatedAt: _livePriceCache.updatedAt,
