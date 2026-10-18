@@ -82,6 +82,10 @@ async function loadZWProducts() {
     ZW_LIVE_PRICES = lp.prices || {};
     ZW_DISCOUNT_PCT = lp.discountPct || 0;
   } catch (e) { ZW_LIVE_PRICES = ZW_LIVE_PRICES || {}; }
+  // Keep the price (and the shop discount) current while the configurator is
+  // open: re-read the live prices every minute and when the tab comes back
+  // into view; re-render only if something actually changed.
+  startLivePriceWatch();
   return ZW_PRODUCTS_DATA;
 }
 
@@ -276,6 +280,30 @@ let ZW_LIVE_PRICES = null;
 // discounted here — the leg/edge/finish add-ons stay at full price, matching
 // what the shop and the checkout actually charge.
 let ZW_DISCOUNT_PCT = 0;
+// Periodic live-price / discount re-check (2026-10-18): a discount the owner
+// switches on or off in Shopify shows up here within ~1–2 min, also in a tab
+// that is already open (before, the prices were read once at startup only).
+let _livePriceWatchStarted = false;
+function startLivePriceWatch() {
+  if (_livePriceWatchStarted) return;
+  _livePriceWatchStarted = true;
+  const check = async () => {
+    if (document.hidden) return;
+    try {
+      const lp = await fetchLivePrices();
+      if (!lp || !lp.prices || !Object.keys(lp.prices).length) return;
+      const pct = Number(lp.discountPct) || 0;
+      const changed = pct !== ZW_DISCOUNT_PCT || JSON.stringify(lp.prices) !== JSON.stringify(ZW_LIVE_PRICES || {});
+      if (!changed) return;
+      ZW_LIVE_PRICES = lp.prices;
+      ZW_DISCOUNT_PCT = pct;
+      console.log('[ZW] live prices changed; discount', pct);
+      if (window._configurator && typeof window._configurator.updatePrice === 'function') window._configurator.updatePrice();
+    } catch (e) { /* keep current prices */ }
+  };
+  setInterval(check, 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+}
 // Return the live price (cents) for a variant if we have one, else the bundled
 // fallback. Keeps the configurator in sync with Shopify with no redeploy.
 function livePrice(variantId, fallbackCents) {
