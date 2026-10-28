@@ -326,6 +326,11 @@ function liveCompareAt(variantId) {
 class TableConfigurator {
   constructor() {
     this.state = { ...DEFAULT_STATE, radius: 0, topThickness: 4 };
+
+    // Small rounded break on the top (and bottom) arris of the tabletop for the
+    // default 'standaard' (Gerade Kante) edge, so it is not a razor-sharp 90 deg.
+    // Radius in mm; set to 0 to restore the old perfectly square edge.
+    this.topEdgeRoundoverMm = 2.5;
     this.scene = null;
     this.camera = null;
     this.renderer = null;
@@ -2181,7 +2186,7 @@ class TableConfigurator {
 
       // Create ExtrudeGeometry in world space, then convert to model-local space
       const modelPos = this.currentModel.position;
-      const geometry = new THREE.ExtrudeGeometry(s, { depth: thickness, bevelEnabled: false });
+      const geometry = new THREE.ExtrudeGeometry(s, this.tabletopExtrudeOpts(thickness, 0.001));
       this.applyEdgeProfile(geometry, thickness, 0.001);
       geometry.rotateX(-Math.PI / 2);
       geometry.translate(-modelPos.x, bottomY - modelPos.y, -modelPos.z);
@@ -2352,8 +2357,8 @@ class TableConfigurator {
         }
 
         const steps = this.getExtrudeSteps();
-        geometry = new THREE.ExtrudeGeometry(s, { depth: thickness, bevelEnabled: false, steps });
         const mmToLocal = 0.001 / ws.x;
+        geometry = new THREE.ExtrudeGeometry(s, this.tabletopExtrudeOpts(thickness, mmToLocal, steps));
         this.applyEdgeProfile(geometry, thickness, mmToLocal);
         geometry.rotateX(-Math.PI / 2);
         geometry.translate(cx, bottomY + thickness, cz);
@@ -2379,8 +2384,8 @@ class TableConfigurator {
         s.lineTo(-halfL, -halfW);
 
         const steps = this.getExtrudeSteps();
-        geometry = new THREE.ExtrudeGeometry(s, { depth: thickness, bevelEnabled: false, steps });
         const mmToLocal = 0.001 / ws.x;
+        geometry = new THREE.ExtrudeGeometry(s, this.tabletopExtrudeOpts(thickness, mmToLocal, steps));
         this.applyEdgeProfile(geometry, thickness, mmToLocal);
         geometry.rotateX(-Math.PI / 2);
         geometry.translate(cx, bottomY + thickness, cz);
@@ -2457,7 +2462,7 @@ class TableConfigurator {
     if (!topShape) return;
 
     const steps = this.getExtrudeSteps();
-    const geometry = new THREE.ExtrudeGeometry(topShape, { depth: thickness, bevelEnabled: false, steps });
+    const geometry = new THREE.ExtrudeGeometry(topShape, this.tabletopExtrudeOpts(thickness, 0.001, steps));
     this.applyEdgeProfile(geometry, thickness, 0.001);
     geometry.rotateX(-Math.PI / 2);
     geometry.translate(0, legTopY + thickness, 0);
@@ -2527,7 +2532,7 @@ class TableConfigurator {
 
     const legTopY = this.originalTopBox ? this.originalTopBox.minY : 0;
     const steps = this.getExtrudeSteps();
-    const geometry = new THREE.ExtrudeGeometry(topShape, { depth: thickness, bevelEnabled: false, steps });
+    const geometry = new THREE.ExtrudeGeometry(topShape, this.tabletopExtrudeOpts(thickness, 0.001, steps));
     this.applyEdgeProfile(geometry, thickness, 0.001);
     geometry.rotateX(-Math.PI / 2);
     geometry.translate(0, legTopY + thickness, 0);
@@ -4123,10 +4128,29 @@ class TableConfigurator {
     }
   }
 
+  // Build the ExtrudeGeometry options for a tabletop. The rounded top arris for
+  // the default 'standaard' edge is produced by applyEdgeProfile() (vertex push,
+  // which keeps the exact thickness and footprint); here we only make sure the
+  // extrusion has enough vertical subdivisions for that rounding to resolve.
+  // mmToLocal converts mm -> the shape's local units (world metres by default).
+  tabletopExtrudeOpts(thickness, mmToLocal, steps) {
+    const opts = { depth: thickness, bevelEnabled: false };
+    opts.steps = (steps !== undefined) ? steps : this.getExtrudeSteps();
+    return opts;
+  }
+
   // Get extrude steps for edge profiles (more subdivisions = smoother curves)
   getExtrudeSteps() {
     const edge = this.state.edge;
-    if (edge === 'standaard') return 1;
+    if (edge === 'standaard') {
+      // Extra bands only when the small top roundover is active, so it is smooth.
+      if ((this.topEdgeRoundoverMm || 0) > 0) {
+        const totalMm = this.getThicknessCm() * 10;
+        const R = this.topEdgeRoundoverMm;
+        return Math.max(8, Math.min(72, Math.ceil(totalMm / (R / 4))));
+      }
+      return 1;
+    }
     if (edge === 'facet-bol') return 12;
     if (edge === 'boomstam') return 6; // for taper effect
     return 8;
@@ -4138,8 +4162,38 @@ class TableConfigurator {
   // mmToLocal: conversion factor from mm to geometry-local units
   applyEdgeProfile(geometry, thickness, mmToLocal) {
     const edge = this.state.edge;
-    if (edge === 'standaard') return;
     if (!mmToLocal) mmToLocal = 0.001; // default: mm to meters
+
+    // Default 'Gerade Kante': break the sharp 90 deg top arris with a small
+    // quarter-round. Only the top is eased; thickness and footprint are
+    // unchanged (vertices only move inward, never outward or in z).
+    if (edge === 'standaard') {
+      const roundMm = this.topEdgeRoundoverMm || 0;
+      if (roundMm <= 0) return;
+      const posS = geometry.attributes.position;
+      const totalMmS = thickness / mmToLocal;
+      const R = Math.min(roundMm, totalMmS * 0.45);
+      for (let i = 0; i < posS.count; i++) {
+        const x = posS.getX(i), y = posS.getY(i), z = posS.getZ(i);
+        const t = Math.max(0, Math.min(1, z / thickness));
+        const hMm = (1 - t) * totalMmS; // depth below the top surface, in mm
+        if (hMm > R) continue;
+        // Convex quarter-round: inset = R - sqrt(R^2 - (R-h)^2)
+        const offsetMm = R - Math.sqrt(Math.max(0, R * R - (R - hMm) * (R - hMm)));
+        if (offsetMm > 0) {
+          const dist = Math.sqrt(x * x + y * y);
+          if (dist > 0.0001) {
+            const newDist = Math.max(0, dist - offsetMm * mmToLocal);
+            const ratio = newDist / dist;
+            posS.setX(i, x * ratio);
+            posS.setY(i, y * ratio);
+          }
+        }
+      }
+      posS.needsUpdate = true;
+      geometry.computeVertexNormals();
+      return;
+    }
 
     const pos = geometry.attributes.position;
     const totalMm = thickness / mmToLocal; // total thickness in mm
