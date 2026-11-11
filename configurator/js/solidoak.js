@@ -64,6 +64,7 @@ export function classifySolidOakGeometry(srcGeometry, worldMatrix, opts) {
   const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), n = new THREE.Vector3();
   const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
   const counts = [0, 0, 0];
+  const curvedCounts = [0, 0, 0]; // kops-driehoeken met flinke z-component = gebogen uiteinde
   for (let t = 0; t < triCount; t++) {
     const i0 = t * 3, i1 = t * 3 + 1, i2 = t * 3 + 2;
     a.set(wpos[i0 * 3], wpos[i0 * 3 + 1], wpos[i0 * 3 + 2]);
@@ -75,6 +76,7 @@ export function classifySolidOakGeometry(srcGeometry, worldMatrix, opts) {
     cats[t] = cat;
     nzSign[t] = n.z >= 0 ? 1 : -1;
     counts[cat]++;
+    if (cat !== 0 && Math.abs(n.z) > 0.45) curvedCounts[cat]++;
   }
 
   // wereld-normalen per vertex (voor de vouw-beslissing op zijvlakken)
@@ -142,6 +144,11 @@ export function classifySolidOakGeometry(srcGeometry, worldMatrix, opts) {
   out.userData.zwSolidOak = {
     minX, maxX, minZ, maxZ, topY, minY, thickness, rangeZ,
     hasEnds: counts[1] + counts[2] > 0,
+    // Gebogen uiteinde (rond/ovaal/bootsform/stadion): kopshout vloeiend laten
+    // overgaan in langshout i.p.v. een harde wissel (bij een rechte hoek,
+    // zoals het rechthoekblad, hoort juist wél een harde wissel).
+    curvedA: counts[1] > 0 && curvedCounts[1] / counts[1] > 0.2,
+    curvedB: counts[2] > 0 && curvedCounts[2] / counts[2] > 0.2,
   };
   if (geo !== srcGeometry) geo.dispose();
   return out;
@@ -201,7 +208,10 @@ function sampleStripColor(sampleCtx, f0, f1) {
 export function buildEndgrainTexture(opts) {
   const {
     sampleCtx, seams, photoW, z0, z1, thickness,
-    seed = 1, maxTex = 2048, anisotropy = 1,
+    seed = 1, maxTex = 2048, anisotropy = 1, fadeEdges = false,
+    // Compensatie voor de studioverlichting: de koppen (±X) vangen minder
+    // licht dan de zijkanten (±Z), dus we bakken het verschil in het canvas.
+    brighten = 1.0,
   } = opts;
   const span = Math.max(z1 - z0, 0.05);
   let pxPerM = 1700;
@@ -236,13 +246,13 @@ export function buildEndgrainTexture(opts) {
     const lamW = xB - xA;
     const rng = mulberry32((seed * 7919 + li * 104729) >>> 0);
 
-    // basistoon uit de lamel erboven in de bladfoto
+    // basistoon uit de lamel erboven in de bladfoto — zelfde helderheid als de
+    // zijkanten (geen vaste verdonkering meer), alleen minieme lamelvariatie
     const fA = ((zA / photoW + 0.5) % 1 + 1) % 1;
     const fB = fA + (zB - zA) / photoW;
     let [r, g, b] = sampleStripColor(sampleCtx, fA, Math.min(fB, fA + 0.999));
-    // kopshout is iets donkerder/warmer dan langshout + lichte lamelvariatie
-    const tone = 0.90 * (0.96 + rng() * 0.08);
-    r *= tone; g *= tone * 0.985; b *= tone * 0.97;
+    const tone = (0.985 + rng() * 0.03) * brighten;
+    r = Math.min(255, r * tone); g = Math.min(255, g * tone * 0.995); b = Math.min(255, b * tone * 0.99);
 
     ctx.save();
     ctx.beginPath();
@@ -251,29 +261,27 @@ export function buildEndgrainTexture(opts) {
     ctx.fillStyle = `rgb(${r | 0},${g | 0},${b | 0})`;
     ctx.fillRect(xA - 1, -1, lamW + 2, H + 2);
 
-    // hart van de boom: onder, boven of opzij — per lamel anders, dicht genoeg
-    // bij het blad zodat de bogen echt krommen
+    // hart van de boom: ruim onder of boven het blad, zodat de ringen als
+    // vlakke, liggende bogen vrijwel parallel aan het bladoppervlak lopen
+    // (zoals bij dosse gezaagde lamellen) — per lamel net anders
     const variant = rng();
     let hx, hy;
-    if (variant < 0.45) {        // hart onder het blad
-      hx = xA + lamW * (0.25 + rng() * 0.5);
-      hy = H * (1.05 + rng() * 1.1);
-    } else if (variant < 0.75) { // hart boven het blad
-      hx = xA + lamW * (0.25 + rng() * 0.5);
-      hy = -H * (0.1 + rng() * 1.0);
-    } else {                     // hart opzij
-      hx = (rng() < 0.5 ? xA - lamW * (0.05 + rng() * 0.3) : xB + lamW * (0.05 + rng() * 0.3));
-      hy = H * (rng() * 1.6 - 0.3);
+    if (variant < 0.55) {        // hart onder het blad (vlakke bogen omhoog)
+      hx = xA + lamW * (0.2 + rng() * 0.6);
+      hy = H * (2.4 + rng() * 3.0);
+    } else {                     // hart boven het blad (vlakke bogen omlaag)
+      hx = xA + lamW * (0.2 + rng() * 0.6);
+      hy = -H * (1.4 + rng() * 3.0);
     }
 
     // groeiringen: ellipsbogen rond het hart, afstand ±3–7 mm met jitter
     const maxR = Math.hypot(Math.max(Math.abs(hx - xA), Math.abs(hx - xB)), Math.max(Math.abs(hy), Math.abs(hy - H))) + 4;
-    const ringDark = 0.62 + rng() * 0.12;
+    const ringDark = 0.68 + rng() * 0.12;
     const yScale = pxPerMy / pxPerM; // ringen mee-schalen met niet-uniforme pixels
     let radius = (0.002 + rng() * 0.003) * pxPerM;
     let ringI = 0;
-    while (radius < maxR && ringI < 400) {
-      const alpha = 0.22 + rng() * 0.26;
+    while (radius < maxR && ringI < 900) {
+      const alpha = 0.18 + rng() * 0.22;
       const lw = (0.0004 + rng() * 0.0007) * pxPerM;
       ctx.strokeStyle = `rgba(${(r * ringDark) | 0},${(g * ringDark) | 0},${(b * ringDark * 0.96) | 0},${alpha.toFixed(3)})`;
       ctx.lineWidth = Math.max(0.6, lw);
@@ -292,6 +300,13 @@ export function buildEndgrainTexture(opts) {
       ringI++;
     }
 
+    // DEBUG: felrode lijn op elke lamelgrens om de uitlijning met het blad te
+    // controleren (alleen met window.__zwDebugSeams aan; nooit in productie)
+    if (typeof window !== 'undefined' && window.__zwDebugSeams) {
+      ctx.fillStyle = 'red';
+      ctx.fillRect(xA - 1, 0, 2, H);
+    }
+
     // fijne korrel/speckles
     const specks = Math.round(lamW * H / 450);
     for (let sI = 0; sI < specks; sI++) {
@@ -300,15 +315,31 @@ export function buildEndgrainTexture(opts) {
       ctx.fillStyle = `rgba(${(r * dk) | 0},${(g * dk) | 0},${(b * dk) | 0},0.12)`;
       ctx.fillRect(sx, sy, 1 + rng(), 1);
     }
+
+    // Gebogen uiteinde: laat ringen/lamelgrenzen aan de zijkanten van de kop
+    // vloeiend vervagen naar de egale langshout-toon, zodat de overgang rond
+    // de boog geleidelijk is i.p.v. een harde wissel.
+    if (fadeEdges) {
+      const fadeW = Math.min(W * 0.22, Math.max(30, 0.10 * pxPerM));
+      const base = `${r | 0},${g | 0},${b | 0}`;
+      if (xA < fadeW) {
+        const gL = ctx.createLinearGradient(0, 0, fadeW, 0);
+        gL.addColorStop(0, `rgba(${base},1)`);
+        gL.addColorStop(1, `rgba(${base},0)`);
+        ctx.fillStyle = gL;
+        ctx.fillRect(xA - 1, -1, Math.min(xB, fadeW) - xA + 2, H + 2);
+      }
+      if (xB > W - fadeW) {
+        const gR = ctx.createLinearGradient(W - fadeW, 0, W, 0);
+        gR.addColorStop(0, `rgba(${base},0)`);
+        gR.addColorStop(1, `rgba(${base},1)`);
+        ctx.fillStyle = gR;
+        ctx.fillRect(Math.max(xA, W - fadeW) - 1, -1, xB - Math.max(xA, W - fadeW) + 2, H + 2);
+      }
+    }
     ctx.restore();
   }
 
-  // subtiele schaduwval naar onderen (zoals geolied kops vlak)
-  const grad = ctx.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0, 'rgba(255,255,255,0.05)');
-  grad.addColorStop(1, 'rgba(0,0,0,0.07)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, W, H);
   void rng0;
 
   const tex = new THREE.CanvasTexture(cv);
