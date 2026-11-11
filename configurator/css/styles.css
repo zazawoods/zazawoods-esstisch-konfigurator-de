@@ -1314,8 +1314,8 @@ body {
 
   .viewer {
     flex: none;
-    height: 58vw;
-    min-height: 200px;
+    height: 55vw; /* iets lager (±3 mm) zodat de keuzeknoppen meer ruimte krijgen */
+    min-height: 190px;
     position: sticky;
     top: 0;
     z-index: 10;

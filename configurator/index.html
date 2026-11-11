@@ -40,7 +40,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="css/styles.css?v=8b08e170">
+  <link rel="stylesheet" href="css/styles.css?v=a4193e89">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
@@ -58,7 +58,7 @@
   </script>
   <!-- Warm the module graph in parallel with app.js instead of discovering it one hop later
        (importmap must stay above these — a modulepreload before the map would disable it). -->
-  <link rel="modulepreload" href="js/config.js?v=8b08e170">
+  <link rel="modulepreload" href="js/config.js?v=a4193e89">
   <!-- Mobile perf (2026-08-30): start downloading the initial shape's GLB in
        parallel with the three.js/app module graph instead of after it.
        app.js consumes window.__glbPrefetch in loadGLTF(). -->
@@ -321,10 +321,9 @@
       <div class="sidebar-footer">
         <div class="summary">
           <button class="summary-row" id="summary-toggle" type="button" aria-expanded="false">
-            <span class="summary-row-label">Esstisch
+            <span class="summary-row-label">Zusammenfassung
               <svg class="summary-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
             </span>
-            <span class="summary-row-price" id="summary-price"></span>
           </button>
           <div class="summary-line summary-collapsed" id="summary-text">Ihre Konfiguration ist bereit.</div>
         </div>
@@ -365,6 +364,6 @@
     Konfigurieren
   </button>
 
-  <script type="module" src="js/app.js?v=8b08e170"></script>
+  <script type="module" src="js/app.js?v=a4193e89"></script>
 </body>
 </html>

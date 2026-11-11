@@ -5,9 +5,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
-import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=8b08e170';
-import { OAK_PHOTO_SIZE_M, OAK_LAMELLAS } from './oak-lamellas.js?v=8b08e170';
-import * as SolidOak from './solidoak.js?v=8b08e170';
+import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=a4193e89';
+import { OAK_PHOTO_SIZE_M, OAK_LAMELLAS } from './oak-lamellas.js?v=a4193e89';
+import * as SolidOak from './solidoak.js?v=a4193e89';
 
 // De koppen (±X) vangen minder studiolicht dan de zijkanten (±Z); dit bakt het
 // gemeten helderheidsverschil in het kopshout-canvas zodat beide gelijk ogen.
@@ -274,7 +274,7 @@ function findBaseVariant(product, shape, state) {
   return product.baseVariants.find(v => (v.opt1||'').startsWith(lenPrefix)) || product.baseVariants[0];
 }
 
-import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal, fetchLivePrices } from './shopify.js?v=8b08e170';
+import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal, fetchLivePrices } from './shopify.js?v=a4193e89';
 
 // Live shop prices (variantId → { p: priceCents, c?: compareAtCents }), loaded
 // from /api/live-prices at startup. Null until loaded; empty {} if unavailable.
