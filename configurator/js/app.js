@@ -5,7 +5,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
-import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=a7c31e02';
+import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=49909a09';
+import { OAK_PHOTO_SIZE_M, OAK_LAMELLAS } from './oak-lamellas.js?v=49909a09';
+import * as SolidOak from './solidoak.js?v=49909a09';
 
 // ─── Zaza Woods Untergestell whitelist (user-supplied 2026-06-19) ───
 // model = { name, isWood }  → green card, clicking loads 3D model
@@ -268,7 +270,7 @@ function findBaseVariant(product, shape, state) {
   return product.baseVariants.find(v => (v.opt1||'').startsWith(lenPrefix)) || product.baseVariants[0];
 }
 
-import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal, fetchLivePrices } from './shopify.js?v=a7c31e02';
+import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal, fetchLivePrices } from './shopify.js?v=49909a09';
 
 // Live shop prices (variantId → { p: priceCents, c?: compareAtCents }), loaded
 // from /api/live-prices at startup. Null until loaded; empty {} if unavailable.
@@ -348,6 +350,13 @@ class TableConfigurator {
     this.loader.setDRACOLoader(this.dracoLoader);
     this.textureLoader = new THREE.TextureLoader();
     this.textureCache = {};
+
+    // Massief-eiken weergave (doorlopende nerf + kopshout). Bij een fout op
+    // zwakke GPU's valt alles terug op de klassieke weergave i.p.v. crashen.
+    this.solidOakEnabled = true;
+    this._endgrainCache = new Map();   // key → [matKopA, matKopB]
+    this._oakSampleCtxCache = {};      // colorId → 2d-context van de eikenfoto
+    this._oakInfo = null;              // { colorId, image, seams, roughness }
     this.modelCache = {};
     this.baseBBox = null;
     this.isLoading = false;
@@ -1501,6 +1510,33 @@ class TableConfigurator {
   }
 
   _remapVariantUVs(variant) {
+    // Massief eiken: classificeer per mesh (top/lange zijde/kops), zet
+    // real-scale UV's + 3 materiaalgroepen en ken de materialen direct toe.
+    if (this._useSolidOak()) {
+      let failed = null;
+      variant.traverse((child) => {
+        if (failed || !child.isMesh || !child.geometry) return;
+        try {
+          SolidOak.classifySolidOakMesh(child, { photoW: OAK_PHOTO_SIZE_M });
+          if (this.topMaterial) this._assignTabletopMaterial(child);
+        } catch (e) { failed = e; }
+      });
+      if (!failed) return;
+      this._solidOakDisable(failed); // flag uit; hieronder de klassieke weg
+    }
+    // Klassiek pad (keramiek of fallback): originele geometry terug + oude UV's.
+    variant.traverse((child) => {
+      if (child.isMesh) SolidOak.restorePristineGeometry(child);
+    });
+    this._legacyRemapVariantUVs(variant);
+    if (this.topMaterial) {
+      variant.traverse((child) => {
+        if (child.isMesh) this._assignTabletopMaterial(child);
+      });
+    }
+  }
+
+  _legacyRemapVariantUVs(variant) {
     const forcePlanar = false;
     variant.traverse((child) => {
       if (!child.isMesh || !child.geometry) return;
@@ -2034,7 +2070,25 @@ class TableConfigurator {
   }
 
   // Apply consistent top-down UV mapping to a tabletop geometry
+  // Zet UV's op een custom (geëxtrudeerd) blad. Geometry staat al in
+  // wereldruimte. Geeft de (eventueel vervangen) geometry terug.
   applyTabletopUVs(geometry) {
+    if (this._useSolidOak()) {
+      try {
+        const classified = SolidOak.classifySolidOakGeometry(geometry, null, { photoW: OAK_PHOTO_SIZE_M });
+        if (classified) {
+          geometry.dispose();
+          return classified;
+        }
+      } catch (e) {
+        this._solidOakDisable(e);
+      }
+    }
+    this._legacyApplyTabletopUVs(geometry);
+    return geometry;
+  }
+
+  _legacyApplyTabletopUVs(geometry) {
     const pos = geometry.attributes.position;
     const norm = geometry.attributes.normal;
     if (!pos) return;
@@ -2186,13 +2240,14 @@ class TableConfigurator {
 
       // Create ExtrudeGeometry in world space, then convert to model-local space
       const modelPos = this.currentModel.position;
-      const geometry = new THREE.ExtrudeGeometry(s, this.tabletopExtrudeOpts(thickness, 0.001));
+      let geometry = new THREE.ExtrudeGeometry(s, this.tabletopExtrudeOpts(thickness, 0.001));
       this.applyEdgeProfile(geometry, thickness, 0.001);
       geometry.rotateX(-Math.PI / 2);
       geometry.translate(-modelPos.x, bottomY - modelPos.y, -modelPos.z);
 
-      // Apply top-down UV mapping for consistent texture
-      this.applyTabletopUVs(geometry);
+      // Apply top-down UV mapping for consistent texture (massief: ook
+      // classificatie in top/lange zijde/kops + materiaalgroepen)
+      geometry = this.applyTabletopUVs(geometry);
 
       // Hide original mesh
       child.visible = false;
@@ -2201,22 +2256,11 @@ class TableConfigurator {
       const existing = this.currentModel.getObjectByName(meshName);
       if (existing) { existing.geometry.dispose(); this.currentModel.remove(existing); }
 
-      // Create replacement mesh with edge grain material
-      let finalMat;
-      if (this.edgeMaterial && geometry.groups && geometry.groups.length >= 3) {
-        finalMat = [
-          this.topMaterial ? this.topMaterial.clone() : new THREE.MeshStandardMaterial(),
-          this.topMaterial ? this.topMaterial.clone() : new THREE.MeshStandardMaterial(),
-          this.edgeMaterial.clone()
-        ];
-      } else {
-        finalMat = this.topMaterial ? this.topMaterial.clone() : new THREE.MeshStandardMaterial();
-      }
-
-      const newMesh = new THREE.Mesh(geometry, finalMat);
+      const newMesh = new THREE.Mesh(geometry, this.topMaterial ? this.topMaterial.clone() : new THREE.MeshStandardMaterial());
       newMesh.castShadow = true;
       newMesh.receiveShadow = true;
       newMesh.name = meshName;
+      this._assignTabletopMaterial(newMesh);
       this.currentModel.add(newMesh);
     });
 
@@ -2288,7 +2332,7 @@ class TableConfigurator {
       const existing = this.tabletopObject.getObjectByName('custom_tabletop');
       if (existing) {
         if (existing.geometry) existing.geometry.dispose();
-        if (existing.material) existing.material.dispose();
+        if (existing.material) { (Array.isArray(existing.material) ? existing.material : [existing.material]).forEach(m => m && m.dispose()); }
         this.tabletopObject.remove(existing);
       }
 
@@ -2412,7 +2456,7 @@ class TableConfigurator {
       const existing = this.tabletopObject.getObjectByName('custom_tabletop');
       if (existing) {
         if (existing.geometry) existing.geometry.dispose();
-        if (existing.material) existing.material.dispose();
+        if (existing.material) { (Array.isArray(existing.material) ? existing.material : [existing.material]).forEach(m => m && m.dispose()); }
         this.tabletopObject.remove(existing);
       }
       // Re-apply current material to restored GLB meshes
@@ -2499,7 +2543,7 @@ class TableConfigurator {
     const existing = this.tabletopObject.getObjectByName('procedural_tabletop');
     if (existing) {
       if (existing.geometry) existing.geometry.dispose();
-      if (existing.material) existing.material.dispose();
+      if (existing.material) { (Array.isArray(existing.material) ? existing.material : [existing.material]).forEach(m => m && m.dispose()); }
       this.tabletopObject.remove(existing);
     }
 
@@ -2931,21 +2975,94 @@ class TableConfigurator {
       if (seen.has(variant)) continue;
       seen.add(variant);
       variant.traverse((child) => {
-        if (child.isMesh) {
-          if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
-          else if (child.material) child.material.dispose();
-
-          if (child.geometry.groups && child.geometry.groups.length >= 3 && this.edgeMaterial) {
-            child.material = [
-              this.topMaterial.clone(),
-              this.topMaterial.clone(),
-              this.edgeMaterial.clone()
-            ];
-          } else {
-            child.material = this.topMaterial.clone();
-          }
-        }
+        if (child.isMesh) this._assignTabletopMaterial(child);
       });
+    }
+  }
+
+  // ─── Massief eiken: hulpfuncties ───
+
+  _useSolidOak() {
+    return this.solidOakEnabled && this.state.materialType === 'oak';
+  }
+
+  // Schakel de massief-weergave definitief uit (fallback) en herstel een nette
+  // klassieke weergave. Wordt alleen bij een runtime-fout aangeroepen.
+  _solidOakDisable(err) {
+    if (!this.solidOakEnabled) return;
+    console.error('[SolidOak] uitgeschakeld na fout — klassieke weergave actief:', err);
+    this.solidOakEnabled = false;
+    try {
+      this.applyTopMaterial(this.state.materialType, this.state.color);
+    } catch (e) { /* klassieke pad herstelt zichzelf bij de volgende interactie */ }
+  }
+
+  // Kopshout-materialen (A = +X kop, B = −X kop) voor een geclassificeerd blad.
+  _getEndgrainMaterials(info) {
+    const oak = this._oakInfo;
+    if (!oak || !oak.image) return null;
+    const key = [oak.colorId, info.minZ.toFixed(3), info.maxZ.toFixed(3), info.thickness.toFixed(3)].join('|');
+    let mats = this._endgrainCache.get(key);
+    if (!mats) {
+      if (this._endgrainCache.size > 32) {
+        const first = this._endgrainCache.keys().next().value;
+        this._endgrainCache.delete(first);
+      }
+      let sampleCtx = this._oakSampleCtxCache[oak.colorId];
+      if (!sampleCtx) sampleCtx = this._oakSampleCtxCache[oak.colorId] = SolidOak.makeSampleCtx(oak.image);
+      const caps = this.renderer && this.renderer.capabilities;
+      const maxTex = Math.min(2048, (caps && caps.maxTextureSize) || 2048);
+      const anisotropy = caps ? Math.min(4, this.renderer.capabilities.getMaxAnisotropy()) : 1;
+      const matType = MATERIAL_TYPES.oak;
+      mats = ['A', 'B'].map(side => {
+        const tex = SolidOak.buildEndgrainTexture({
+          sampleCtx,
+          seams: oak.seams,
+          photoW: OAK_PHOTO_SIZE_M,
+          z0: info.minZ, z1: info.maxZ,
+          thickness: info.thickness,
+          seed: SolidOak.endgrainSeed(oak.colorId, side),
+          maxTex, anisotropy,
+        });
+        return new THREE.MeshStandardMaterial({
+          map: tex,
+          bumpMap: tex,
+          bumpScale: 0.02,
+          roughness: Math.min((oak.roughness ?? matType.roughness) + 0.08, 1),
+          metalness: matType.metalness,
+          envMapIntensity: 0.25,
+        });
+      });
+      this._endgrainCache.set(key, mats);
+    }
+    return mats;
+  }
+
+  // Centrale materiaal-toekenning voor élk tafelblad-mesh.
+  _assignTabletopMaterial(mesh) {
+    if (!mesh || !mesh.isMesh || !this.topMaterial) return;
+    if (Array.isArray(mesh.material)) mesh.material.forEach(m => m && m.dispose());
+    else if (mesh.material) mesh.material.dispose();
+
+    const info = mesh.geometry && mesh.geometry.userData && mesh.geometry.userData.zwSolidOak;
+    if (info && this._useSolidOak()) {
+      let endMats = null;
+      try { endMats = this._getEndgrainMaterials(info); }
+      catch (e) { console.error('[SolidOak] kopshout-canvas faalde, nette rand als fallback:', e); }
+      const fallbackEdge = () => (this.edgeMaterial ? this.edgeMaterial.clone() : this.topMaterial.clone());
+      mesh.material = [
+        this.topMaterial.clone(),
+        endMats ? endMats[0].clone() : fallbackEdge(),
+        endMats ? endMats[1].clone() : fallbackEdge(),
+      ];
+    } else if (mesh.geometry.groups && mesh.geometry.groups.length >= 3 && this.edgeMaterial) {
+      mesh.material = [
+        this.topMaterial.clone(),
+        this.topMaterial.clone(),
+        this.edgeMaterial.clone()
+      ];
+    } else {
+      mesh.material = this.topMaterial.clone();
     }
   }
 
@@ -3032,25 +3149,52 @@ class TableConfigurator {
         envMapIntensity: envIntensity * 0.7
       });
     } else {
-      // Oak: tile texture with wrapping
-      texture.wrapS = THREE.RepeatWrapping;
-      texture.wrapT = THREE.RepeatWrapping;
-      texture.rotation = Math.PI / 2;
-      texture.center.set(0.5, 0.5);
-      const rep = 2;
-      texture.repeat.set(rep, rep);
-
       // Per-color roughness override (e.g. Yakisugi burned wood)
       const colorRoughness = colorDef.roughness ?? matType.roughness;
       const colorMetalness = matType.metalness;
+      const useSolid = this._useSolidOak();
+
+      let topTexture;
+      if (useSolid) {
+        // Massief eiken: UV's staan op WARE SCHAAL (1 fototegel = OAK_PHOTO_SIZE_M
+        // meter), dus de texture-transform blijft neutraal. Zo zijn de lamellen
+        // bij elke maat/vorm even breed en loopt de nerf over de rand door.
+        topTexture = texture.clone();
+        topTexture.wrapS = THREE.RepeatWrapping;
+        topTexture.wrapT = THREE.RepeatWrapping;
+        topTexture.rotation = 0;
+        topTexture.center.set(0, 0);
+        topTexture.repeat.set(1, 1);
+        topTexture.needsUpdate = true;
+
+        const base = String(colorDef.file || '').split('/').pop();
+        const lam = OAK_LAMELLAS[base];
+        const ref = OAK_LAMELLAS['1-oil-plus-2c-oak-natural.jpg'];
+        this._oakInfo = {
+          colorId: colorDef.id,
+          image: texture.image,
+          seams: (lam && lam.seams && lam.seams.length) ? lam.seams
+            : ((ref && ref.seams) || [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95]),
+          roughness: colorRoughness,
+        };
+      } else {
+        // Klassiek: tile texture with wrapping
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.wrapT = THREE.RepeatWrapping;
+        texture.rotation = Math.PI / 2;
+        texture.center.set(0.5, 0.5);
+        const repLegacy = 2;
+        texture.repeat.set(repLegacy, repLegacy);
+        topTexture = texture;
+      }
 
       // Bump map from texture itself: subtle grain depth for all oak, stronger for Yakisugi
-      const bumpTex = texture.clone();
+      const bumpTex = topTexture.clone();
       bumpTex.needsUpdate = true;
       const bumpScale = colorDef.bumpScale || 0.012; // subtle default for regular oak
 
       const topMatProps = {
-        map: texture,
+        map: topTexture,
         roughness: colorRoughness,
         metalness: colorMetalness,
         envMapIntensity: 0.4,
@@ -3060,12 +3204,14 @@ class TableConfigurator {
 
       this.topMaterial = new THREE.MeshStandardMaterial(topMatProps);
 
-      // Oak endgrain edge material
+      // Oak edge material (klassiek, en fallback wanneer massief uitstaat)
       const edgeTexture = texture.clone();
+      edgeTexture.wrapS = THREE.RepeatWrapping;
+      edgeTexture.wrapT = THREE.RepeatWrapping;
       edgeTexture.needsUpdate = true;
       edgeTexture.rotation = 0;
       edgeTexture.center.set(0.5, 0.5);
-      edgeTexture.repeat.set(rep * 2, rep * 4);
+      edgeTexture.repeat.set(4, 8);
 
       const edgeBump = edgeTexture.clone();
       edgeBump.needsUpdate = true;
@@ -3091,20 +3237,7 @@ class TableConfigurator {
         if (seen.has(variant)) continue;
         seen.add(variant);
         variant.traverse((child) => {
-          if (child.isMesh) {
-            if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
-            else if (child.material) child.material.dispose();
-
-            if (child.geometry.groups && child.geometry.groups.length >= 3) {
-              child.material = [
-                this.topMaterial.clone(),
-                this.topMaterial.clone(),
-                this.edgeMaterial.clone()
-              ];
-            } else {
-              child.material = this.topMaterial.clone();
-            }
-          }
+          if (child.isMesh) this._assignTabletopMaterial(child);
         });
       }
     }
@@ -3116,15 +3249,7 @@ class TableConfigurator {
     if (this.currentModel) {
       ['custom_tabletop', 'custom_tabletop_a', 'custom_tabletop_b'].forEach(name => {
         const m = this.currentModel.getObjectByName(name);
-        if (m && m.isMesh) {
-          if (Array.isArray(m.material)) m.material.forEach(x => x.dispose());
-          else if (m.material) m.material.dispose();
-          if (m.geometry.groups && m.geometry.groups.length >= 3 && this.edgeMaterial) {
-            m.material = [this.topMaterial.clone(), this.topMaterial.clone(), this.edgeMaterial.clone()];
-          } else {
-            m.material = this.topMaterial.clone();
-          }
-        }
+        if (m && m.isMesh) this._assignTabletopMaterial(m);
       });
     }
 
@@ -6275,6 +6400,9 @@ class TableConfigurator {
     modelClone.traverse(child => { if (!child.visible) toRemove.push(child); });
     toRemove.forEach(obj => obj.parent?.remove(obj));
     this._groundExportClone(modelClone);
+    // USDZExporter (r162) kan niet overweg met material-arrays + groups —
+    // splits het blad in één mesh per materiaalgroep (top/kops/kops).
+    try { SolidOak.splitMultiMaterialMeshes(modelClone); } catch (e) { console.error('[SolidOak] USDZ-split faalde:', e); }
     this._prepareExportMaterials(modelClone);
     exportScene.add(modelClone);
 
