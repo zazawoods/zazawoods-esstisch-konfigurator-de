@@ -5,9 +5,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
-import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=c33c1888';
-import { OAK_PHOTO_SIZE_M, OAK_LAMELLAS } from './oak-lamellas.js?v=c33c1888';
-import * as SolidOak from './solidoak.js?v=c33c1888';
+import { TABLE_SHAPES, MATERIAL_TYPES, EDGE_OPTIONS, POWDER_COAT_COLORS, DEFAULT_STATE, BUILD_VERSION } from './config.js?v=8b08e170';
+import { OAK_PHOTO_SIZE_M, OAK_LAMELLAS } from './oak-lamellas.js?v=8b08e170';
+import * as SolidOak from './solidoak.js?v=8b08e170';
 
 // De koppen (±X) vangen minder studiolicht dan de zijkanten (±Z); dit bakt het
 // gemeten helderheidsverschil in het kopshout-canvas zodat beide gelijk ogen.
@@ -274,7 +274,7 @@ function findBaseVariant(product, shape, state) {
   return product.baseVariants.find(v => (v.opt1||'').startsWith(lenPrefix)) || product.baseVariants[0];
 }
 
-import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal, fetchLivePrices } from './shopify.js?v=c33c1888';
+import { fetchAllPrices, formatPrice, getCachedTotal, setCachedTotal, fetchLivePrices } from './shopify.js?v=8b08e170';
 
 // Live shop prices (variantId → { p: priceCents, c?: compareAtCents }), loaded
 // from /api/live-prices at startup. Null until loaded; empty {} if unavailable.
@@ -4688,6 +4688,16 @@ class TableConfigurator {
     if (btn) btn.addEventListener('click', cartHandler);
     const btnMobile = document.getElementById('btn-add-to-cart-mobile');
     if (btnMobile) btnMobile.addEventListener('click', cartHandler);
+
+    // Collapsible configuration summary (bogade-style "Esstisch ⌄" row)
+    const summaryToggle = document.getElementById('summary-toggle');
+    const summaryText = document.getElementById('summary-text');
+    if (summaryToggle && summaryText) {
+      summaryToggle.addEventListener('click', () => {
+        const open = summaryText.classList.toggle('summary-collapsed');
+        summaryToggle.setAttribute('aria-expanded', open ? 'false' : 'true');
+      });
+    }
   }
 
   renderShapeGrid() {
@@ -6482,6 +6492,16 @@ class TableConfigurator {
       ${this.state.zwLegName ? `<br>Tischgestell: ${this.state.zwLegName}` : (legLabel ? `<br>Tischgestell: ${legLabel}` : '')}
     `;
 
+    // Lieferzeit der aktuellen Form (aus der Shopify-Produktseite, config.js)
+    const deliveryEl = document.getElementById('delivery-text');
+    const deliveryMobileEl = document.getElementById('delivery-text-mobile');
+    const deliveryStr = shape && shape.deliveryTime ? `Lieferzeit ${shape.deliveryTime}` : '';
+    if (deliveryEl) {
+      deliveryEl.textContent = deliveryStr;
+      deliveryEl.parentElement.style.visibility = deliveryStr ? '' : 'hidden';
+    }
+    if (deliveryMobileEl) deliveryMobileEl.textContent = deliveryStr;
+
     // Update live price
     this.updatePrice();
 
@@ -6631,6 +6651,23 @@ class TableConfigurator {
     };
     setPrice(priceEl,       showTotal, 'Preis wird berechnet…');
     setPrice(priceMobileEl, showTotal, '€ ...');
+
+    // Bogade-style summary row price (always the amount actually charged)
+    const summaryPriceEl = document.getElementById('summary-price');
+    if (summaryPriceEl) summaryPriceEl.textContent = showTotal > 0 ? fmt(showTotal) : '';
+
+    // Discount badge ("-10%") above the total while a shop promo is active
+    const badgeEl = document.getElementById('discount-badge');
+    if (badgeEl) {
+      let pct = 0;
+      if (wasPrice && wasPrice > showTotal) {
+        pct = ZW_DISCOUNT_PCT > 0
+          ? Math.round(ZW_DISCOUNT_PCT * 100)
+          : Math.round((1 - showTotal / wasPrice) * 100);
+      }
+      badgeEl.textContent = pct > 0 ? `-${pct}%` : '';
+      badgeEl.style.display = pct > 0 ? '' : 'none';
+    }
   }
 
   showLoader() {

@@ -4,13 +4,15 @@ const BASE_PATH = '..';
 
 // Single cache-bust across the whole app — bumped by the deploy script so all
 // static assets (JS, images, GLBs) invalidate together. Never edit by hand.
-export const BUILD_VERSION = 'c33c1888';
+export const BUILD_VERSION = '8b08e170';
 
 export const TABLE_SHAPES = [
   {
     id: 'rectangle',
     name: 'Rechteck',
     shopifyHandle: 'rechteckiger-esstisch-milano-aus-massiver-eichenholz-mit-baumstammkanten',
+    // Lieferzeit wie auf der Shopify-Produktseite (Stand 2026-11-11)
+    deliveryTime: '3–4 Wochen',
     glbFile: `${BASE_PATH}/glb files tables and legs/rectangle.glb`,
     icon: `<img src="Swatches/Vorm/Rechteck_bw.png?v=${BUILD_VERSION}" alt="Rechteck"/>`,
     meshPrefix: ['rectangle', 'Rectangle'],
@@ -23,6 +25,8 @@ export const TABLE_SHAPES = [
     id: 'oval',
     name: 'Oval',
     shopifyHandle: 'ovaler-esstisch-danilo-aus-massiver-eichenholz-mit-schweizer-kante',
+    // Lieferzeit wie auf der Shopify-Produktseite (Stand 2026-11-11)
+    deliveryTime: '3–4 Wochen',
     glbFile: `${BASE_PATH}/glb files tables and legs/Oval.glb`,
     icon: `<img src="Swatches/Vorm/Oval_bw.png?v=${BUILD_VERSION}" alt="Oval"/>`,
     meshPrefix: ['Oval'],
@@ -39,6 +43,8 @@ export const TABLE_SHAPES = [
     // Retied to the "Halbovaler Esstisch (White 5%)" Shopify product per user
     // request. Base variant IDs live in zw-products.json under this same key.
     shopifyHandle: 'ovaler-esstisch-white-5-aus-massivem-eichenholz',
+    // Lieferzeit wie auf der Shopify-Produktseite (Stand 2026-11-11)
+    deliveryTime: '3–4 Wochen',
     glbFile: `${BASE_PATH}/glb files tables and legs/DanishOval.glb`,
     icon: `<img src="Swatches/Vorm/DanishOval_bw.png?v=${BUILD_VERSION}" alt="Halboval"/>`,
     meshPrefix: ['Danish_Oval', 'Danish'],
@@ -54,6 +60,8 @@ export const TABLE_SHAPES = [
     id: 'round',
     name: 'Rund',
     shopifyHandle: 'runder-esstisch-romano-aus-massiver-eichenholz',
+    // Lieferzeit wie auf der Shopify-Produktseite (Stand 2026-11-11)
+    deliveryTime: '3–4 Wochen',
     glbFile: `${BASE_PATH}/glb files tables and legs/Round.glb`,
     icon: `<img src="Swatches/Vorm/Rund_bw.png?v=${BUILD_VERSION}" alt="Rund"/>`,
     meshPrefix: ['Round'],
@@ -67,6 +75,8 @@ export const TABLE_SHAPES = [
     id: 'organic',
     name: 'Organisch',
     shopifyHandle: 'esstisch-milano-aus-massivem-eichenholz-mit-baumstammkanten-copy',
+    // Lieferzeit wie auf der Shopify-Produktseite (Stand 2026-11-11)
+    deliveryTime: '3–4 Wochen',
     glbFile: `${BASE_PATH}/glb files tables and legs/Organic.glb`,
     icon: `<img src="Swatches/Vorm/Organisch_bw.png?v=${BUILD_VERSION}" alt="Organisch"/>`,
     meshPrefix: ['Organic'],
@@ -81,6 +91,8 @@ export const TABLE_SHAPES = [
     id: 'bootsform',
     name: 'Bootsform',
     shopifyHandle: 'bootsform-esstisch-sergio-aus-massivem-eichenholz',
+    // Lieferzeit wie auf der Shopify-Produktseite (Stand 2026-11-11)
+    deliveryTime: '3–4 Wochen',
     glbFile: `${BASE_PATH}/glb files tables and legs/Bootsform.glb`,
     icon: `<img src="Swatches/Vorm/Bootsform_bw.png?v=${BUILD_VERSION}" alt="Bootsform"/>`,
     meshPrefix: ['bootsform_', 'Bootsform_'],
@@ -96,6 +108,8 @@ export const TABLE_SHAPES = [
     id: 'halfrond',
     name: 'Halbrund',
     shopifyHandle: 'halbkreisform-esstisch-aus-massivem-eichenholz',
+    // Lieferzeit wie auf der Shopify-Produktseite (Stand 2026-11-11)
+    deliveryTime: '3–4 Wochen',
     glbFile: `${BASE_PATH}/glb files tables and legs/Halfrond.glb`,
     icon: `<img src="Swatches/Vorm/Halbrund_bw.png?v=${BUILD_VERSION}" alt="Halbrund"/>`,
     meshPrefix: ['Halfrond'],

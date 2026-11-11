@@ -1065,22 +1065,62 @@ body {
 }
 
 .summary {
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
-.summary-label {
-  font-size: 11px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+/* Bogade-style collapsible summary row: "Esstisch ⌄ ..... € 1.863" */
+.summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: var(--font);
+}
+
+.summary-row-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.summary-chevron {
+  transition: transform 0.25s ease;
   color: var(--color-text-light);
+}
+
+.summary-row[aria-expanded="true"] .summary-chevron {
+  transform: rotate(180deg);
+}
+
+.summary-row-price {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
 }
 
 .summary-line {
   font-size: 13px;
-  color: var(--color-text);
-  margin-top: 4px;
+  color: var(--color-text-light);
   line-height: 1.5;
+  overflow: hidden;
+  max-height: 200px;
+  transition: max-height 0.3s ease, margin 0.3s ease, opacity 0.3s ease;
+  margin: 4px 0 2px;
+  opacity: 1;
+}
+
+.summary-line.summary-collapsed {
+  max-height: 0;
+  margin: 0;
+  opacity: 0;
 }
 
 .price-divider {
@@ -1097,8 +1137,28 @@ body {
 
 .price-label {
   font-family: var(--font);
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 600;
   color: var(--color-text);
+}
+
+.price-bar-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+/* Small promo badge above the total (shown while a shop discount is active) */
+.discount-badge {
+  background: var(--color-text);
+  color: var(--color-white);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  border-radius: 3px;
+  white-space: nowrap;
 }
 
 #total-price {
@@ -1127,13 +1187,30 @@ body {
   color: #577476;
 }
 
+/* Delivery time line (truck + "Lieferzeit …"), bogade-style above the CTA */
+.delivery-line {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--color-text);
+  padding: 2px 0 10px;
+}
+
+.delivery-line svg {
+  color: var(--color-text-light);
+  flex-shrink: 0;
+}
+
 .free-shipping {
   font-family: var(--font);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--color-accent);
   text-align: center;
-  padding: 2px 0 6px;
+  padding: 8px 0 0;
 }
 
 .cta-button {
@@ -1192,6 +1269,13 @@ body {
   display: block;
   font-size: 10px;
   color: var(--color-accent);
+  font-weight: 500;
+}
+
+.mobile-delivery {
+  display: block;
+  font-size: 10px;
+  color: var(--color-text);
   font-weight: 500;
 }
 
@@ -1298,6 +1382,15 @@ body {
     display: none;
   }
 
+  /* Mobile bar is compact, bogade-style: price + delivery + CTA, no summary */
+  .sidebar-footer .summary {
+    display: none;
+  }
+
+  .sidebar-footer .delivery-line {
+    display: none;
+  }
+
   .sidebar-footer .cta-desktop {
     display: none;
   }
@@ -1306,7 +1399,8 @@ body {
     display: flex;
     align-items: center;
     gap: 12px;
-    flex-shrink: 0;
+    flex: 1;
+    justify-content: space-between;
   }
 
   .sidebar-footer .cta-mobile {
@@ -1479,8 +1573,8 @@ body {
 
 /* Breathing room between price line and the In den Warenkorb button so the
    button doesn't visually touch "Gesamtpreis (inkl. Lieferung)". */
-.sidebar-footer .price-bar { margin-bottom: 14px; }
-.sidebar-footer .cta-desktop { margin-top: 6px; }
+.sidebar-footer .price-bar { margin-bottom: 4px; }
+.sidebar-footer .cta-desktop { margin-top: 2px; }
 
 
 /* Mobile: page must never pinch-zoom — only the 3D canvas zooms (2026-07-10).

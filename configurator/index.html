@@ -40,7 +40,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="css/styles.css?v=c33c1888">
+  <link rel="stylesheet" href="css/styles.css?v=8b08e170">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
@@ -58,7 +58,7 @@
   </script>
   <!-- Warm the module graph in parallel with app.js instead of discovering it one hop later
        (importmap must stay above these — a modulepreload before the map would disable it). -->
-  <link rel="modulepreload" href="js/config.js?v=c33c1888">
+  <link rel="modulepreload" href="js/config.js?v=8b08e170">
   <!-- Mobile perf (2026-08-30): start downloading the initial shape's GLB in
        parallel with the three.js/app module graph instead of after it.
        app.js consumes window.__glbPrefetch in loadGLTF(). -->
@@ -320,22 +320,31 @@
       <!-- Summary footer -->
       <div class="sidebar-footer">
         <div class="summary">
-          <span class="summary-label">Übersicht</span>
-          <div class="summary-line" id="summary-text">Ihre Konfiguration ist bereit.</div>
+          <button class="summary-row" id="summary-toggle" type="button" aria-expanded="false">
+            <span class="summary-row-label">Esstisch
+              <svg class="summary-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </span>
+            <span class="summary-row-price" id="summary-price"></span>
+          </button>
+          <div class="summary-line summary-collapsed" id="summary-text">Ihre Konfiguration ist bereit.</div>
         </div>
         <div class="price-divider"></div>
         <div class="price-bar">
-          <span class="price-label">Gesamtbetrag: <small style="display:block;font-weight:500;color:var(--color-accent);font-size:10.5px;margin-top:1px;">(inkl. kostenlose Lieferung)</small></span>
-          <span id="total-price" class="price-loading">Preis wird berechnet…</span>
+          <span class="price-label">Gesamt</span>
+          <span class="price-bar-right"><span class="discount-badge" id="discount-badge" style="display:none"></span><span id="total-price" class="price-loading">Preis wird berechnet…</span></span>
         </div>
-        <div class="free-shipping" style="display:none">Kostenlose Lieferung &amp; Montage</div>
+        <div class="delivery-line">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1 5h13v11H1z"/><path d="M14 9h4l3 3v4h-7z"/><circle cx="6" cy="18.5" r="1.8"/><circle cx="17.5" cy="18.5" r="1.8"/></svg>
+          <span id="delivery-text">Lieferzeit 3–4 Wochen</span>
+        </div>
         <div class="mobile-price-row">
           <div class="mobile-price-info">
             <span id="total-price-mobile" class="price-loading">€ ...</span>
-            <span class="mobile-shipping" style="display:none">Kostenlose Lieferung<br>&amp; Montage</span>
+            <span class="mobile-delivery" id="delivery-text-mobile"></span>
+            <span class="mobile-shipping">Kostenlose Lieferung</span>
           </div>
           <button class="cta-button cta-mobile" id="btn-add-to-cart-mobile">
-            Bestellen
+            In den Warenkorb
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
           </button>
         </div>
@@ -343,6 +352,7 @@
           In den Warenkorb
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
         </button>
+        <div class="free-shipping">Kostenlose Lieferung</div>
       </div>
 
     </aside>
@@ -355,6 +365,6 @@
     Konfigurieren
   </button>
 
-  <script type="module" src="js/app.js?v=c33c1888"></script>
+  <script type="module" src="js/app.js?v=8b08e170"></script>
 </body>
 </html>
