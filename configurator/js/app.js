@@ -1939,50 +1939,71 @@ class TableConfigurator {
 
     if (topPoints.length < 3) return null;
 
-    // Compute smooth radial outline instead of angular convex hull
-    // Find centroid
-    let cx = 0, cz = 0;
-    for (const p of topPoints) { cx += p.x; cz += p.z; }
-    cx /= topPoints.length;
-    cz /= topPoints.length;
-
-    // For each angle (every 2°), find the farthest point from center
-    const numSamples = 180; // 360° / 2° = 180 samples
-    const outline = [];
-    for (let s = 0; s < numSamples; s++) {
-      const angle = (s / numSamples) * Math.PI * 2;
-      const dirX = Math.cos(angle);
-      const dirZ = Math.sin(angle);
-
-      // Find the point with maximum projection along this direction
-      let maxProj = -Infinity;
-      let bestPoint = null;
-      for (const p of topPoints) {
-        const dx = p.x - cx;
-        const dz = p.z - cz;
-        const proj = dx * dirX + dz * dirZ;
-        if (proj > maxProj) {
-          maxProj = proj;
-          bestPoint = p;
-        }
-      }
-      if (bestPoint) {
-        outline.push({ x: bestPoint.x, z: bestPoint.z });
-      }
+    // Outline = exact convex hull of the top-face vertices (monotone chain),
+    // in increasing-angle order in the X/Z plane.
+    // The old version probed 180 directions (every 2°) for the farthest
+    // vertex. On gently curved sides that skipped rim vertices (Bootsform long
+    // side: 300-450mm holes right next to 12mm corner steps) and the rebuilt
+    // Schweizer-Kante top kinked at all four corners. The hull keeps every
+    // rim vertex, has no duplicates and a guaranteed consistent order.
+    const uniq = new Map();
+    for (const p of topPoints) {
+      uniq.set(Math.round(p.x * 1e4) + ',' + Math.round(p.z * 1e4), p);
     }
+    const sorted = [...uniq.values()].sort((a, b) => a.x - b.x || a.z - b.z);
+    if (sorted.length < 3) return null;
+    const cross = (o, a, b) => (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
+    const lower = [];
+    for (const p of sorted) {
+      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+      lower.push(p);
+    }
+    const upper = [];
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const p = sorted[i];
+      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+      upper.push(p);
+    }
+    lower.pop(); upper.pop();
+    const hull = lower.concat(upper);
 
-    // Remove duplicate consecutive points
-    const cleaned = [outline[0]];
-    for (let i = 1; i < outline.length; i++) {
+    // Drop points closer than 0.5mm to their predecessor (also across the seam)
+    const cleaned = [];
+    for (const p of hull) {
       const prev = cleaned[cleaned.length - 1];
-      if (Math.abs(outline[i].x - prev.x) > 0.0001 || Math.abs(outline[i].z - prev.z) > 0.0001) {
-        cleaned.push(outline[i]);
-      }
+      if (!prev || Math.hypot(p.x - prev.x, p.z - prev.z) > 0.0005) cleaned.push({ x: p.x, z: p.z });
     }
+    while (cleaned.length > 3 &&
+           Math.hypot(cleaned[0].x - cleaned[cleaned.length - 1].x,
+                      cleaned[0].z - cleaned[cleaned.length - 1].z) <= 0.0005) cleaned.pop();
 
     if (cleaned.length < 3) return null;
 
     return { points: cleaned, minY, maxY };
+  }
+
+  // Smooth closed outline through unevenly spaced rim points.
+  // The old code ran a UNIFORM Catmull-Rom (THREE.SplineCurve) over the points
+  // and took 200 samples by parameter. Where a long gap meets short ones
+  // (Bootsform: long side -> corner radius) a uniform spline overshoots, so the
+  // rebuilt top got a 5-10mm step at all four corners; 200 samples also turned
+  // the long sides into ~19cm straight pieces, and the loop was closed by
+  // appending 3 points and cutting 3 samples, which overlapped the seam.
+  // Now: a truly closed CENTRIPETAL Catmull-Rom (no overshoot/cusps on uneven
+  // spacing), sampled at equal arc length (~10mm steps).
+  smoothClosedOutline(points2D) {
+    if (!points2D || points2D.length < 4) return points2D || [];
+    const curve = new THREE.CatmullRomCurve3(
+      points2D.map(p => new THREE.Vector3(p.x, p.y, 0)), true, 'centripetal');
+    let perimeter = 0;
+    for (let i = 0; i < points2D.length; i++) {
+      perimeter += points2D[i].distanceTo(points2D[(i + 1) % points2D.length]);
+    }
+    const n = Math.max(240, Math.min(900, Math.ceil(perimeter / 0.010)));
+    curve.arcLengthDivisions = n * 4;
+    const spaced = curve.getSpacedPoints(n);
+    spaced.length = n; // closed curve: last sample repeats the first
+    return spaced.map(p => new THREE.Vector2(p.x, p.y));
   }
 
   convexHull2D(points) {
@@ -2229,11 +2250,8 @@ class TableConfigurator {
       // Negate Z to compensate for rotateX(-π/2) which maps shapeY → -worldZ.
       // Reverse point order to maintain CCW winding after Z negation.
       const pts = outline.points;
-      const splinePoints = pts.map(p => new THREE.Vector2(p.x, -p.z)).reverse();
-      splinePoints.push(splinePoints[0], splinePoints[1], splinePoints[2]);
-      const curve = new THREE.SplineCurve(splinePoints);
-      const smoothPts = curve.getPoints(200);
-      smoothPts.length = smoothPts.length - 3;
+      const smoothPts = this.smoothClosedOutline(
+        pts.map(p => new THREE.Vector2(p.x, -p.z)).reverse());
 
       const s = new THREE.Shape();
       s.moveTo(smoothPts[0].x, smoothPts[0].y);
