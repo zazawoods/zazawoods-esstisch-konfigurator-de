@@ -2263,7 +2263,7 @@ class TableConfigurator {
       // Create ExtrudeGeometry in world space, then convert to model-local space
       const modelPos = this.currentModel.position;
       let geometry = new THREE.ExtrudeGeometry(s, this.tabletopExtrudeOpts(thickness, 0.001));
-      this.applyEdgeProfile(geometry, thickness, 0.001);
+      this.applyEdgeProfile(geometry, thickness, 0.001, smoothPts);
       geometry.rotateX(-Math.PI / 2);
       geometry.translate(-modelPos.x, bottomY - modelPos.y, -modelPos.z);
 
@@ -3687,7 +3687,9 @@ class TableConfigurator {
     // (robust; avoids picking up hidden/baked leg geometry). Model is centred at
     // origin, so the tabletop centre is ~ (0,0) in world X/Z.
     const scaleX = this.state.length / shape.defaultLength;
-    const scaleZ = this.state.width / shape.defaultWidth;
+    // modelWidth = native width of the GLB tabletop when it differs from the
+    // default sold width (otherwise the table is drawn at the wrong width).
+    const scaleZ = this.state.width / (shape.modelWidth || shape.defaultWidth);
     const halfX = (this.baseBBox.size.x * scaleX) / 2;
     const halfZ = (this.baseBBox.size.z * scaleZ) / 2;
     const ctrX = 0, ctrZ = 0;
@@ -3714,7 +3716,9 @@ class TableConfigurator {
     if (!shape) return;
 
     const scaleX = this.state.length / shape.defaultLength;
-    const scaleZ = this.state.width / shape.defaultWidth;
+    // modelWidth = native width of the GLB tabletop when it differs from the
+    // default sold width (otherwise the table is drawn at the wrong width).
+    const scaleZ = this.state.width / (shape.modelWidth || shape.defaultWidth);
 
     // Capture state BEFORE changes for smooth morphing
     const isProcedural = ['halfrond', 'boogvorm', 'rectangle', 'verbaan'].includes(shape.id);
@@ -4311,7 +4315,12 @@ class TableConfigurator {
   // Geometry is in XY plane (shape outline), extruded along Z (depth = thickness)
   // z=0 = front face (becomes BOTTOM after rotateX), z=depth = back face (becomes TOP)
   // mmToLocal: conversion factor from mm to geometry-local units
-  applyEdgeProfile(geometry, thickness, mmToLocal) {
+  // outline2D (optional): the ordered closed contour that was extruded. When
+  // given, the profile is pushed in PERPENDICULAR to the edge (uniform bevel
+  // width all round). Without it the old behaviour applies: push toward the
+  // shape centre, which thins the bevel wherever the edge is not facing the
+  // centre (Bootsform corners: pointed, dented underside).
+  applyEdgeProfile(geometry, thickness, mmToLocal, outline2D) {
     const edge = this.state.edge;
     if (!mmToLocal) mmToLocal = 0.001; // default: mm to meters
 
@@ -4348,6 +4357,14 @@ class TableConfigurator {
 
     const pos = geometry.attributes.position;
     const totalMm = thickness / mmToLocal; // total thickness in mm
+
+    // Perpendicular-inset lookup (only for the bevelled 'facet' edge and only
+    // when the caller supplied the contour and the inset cannot fold it).
+    let inwardAt = null;
+    if (edge === 'facet' && outline2D && outline2D.length >= 8) {
+      const maxInset = Math.max(0, totalMm - 15) / Math.tan(25 * Math.PI / 180) * mmToLocal;
+      inwardAt = this.buildInwardNormalLookup(outline2D, maxInset);
+    }
 
     // For boomstam: precompute XY centroid to blend effect (full on long sides, zero on kopse kanten)
     let boomCx = 0, boomCy = 0;
@@ -4458,6 +4475,14 @@ class TableConfigurator {
       }
 
       if (offsetMm > 0) {
+        const inward = inwardAt ? inwardAt(x, y) : null;
+        if (inward) {
+          // Perpendicular to the contour (mitred at corners)
+          const offset = offsetMm * mmToLocal;
+          pos.setX(i, x + inward.x * offset);
+          pos.setY(i, y + inward.y * offset);
+          continue;
+        }
         // Move vertex inward by absolute offset (not proportional)
         // Direction: toward center of shape
         const dist = Math.sqrt(x * x + y * y);
@@ -4474,6 +4499,70 @@ class TableConfigurator {
 
     pos.needsUpdate = true;
     geometry.computeVertexNormals();
+  }
+
+  // For a closed contour (ordered Vector2 list) return a function
+  // (x, y) -> inward mitre vector at the nearest contour point, i.e. the vector
+  // that moves the point `d` inward perpendicular to BOTH adjacent segments when
+  // scaled by d. Returns null (caller falls back to the radial push) when the
+  // contour is degenerate or when an inset of maxInset would fold it (corner
+  // radius smaller than the inset).
+  buildInwardNormalLookup(outline2D, maxInset) {
+    const n = outline2D.length;
+    let area = 0;
+    for (let i = 0; i < n; i++) {
+      const a = outline2D[i], b = outline2D[(i + 1) % n];
+      area += a.x * b.y - b.x * a.y;
+    }
+    if (Math.abs(area) < 1e-9) return null;
+    const sgn = area > 0 ? 1 : -1; // +1 = counter-clockwise
+    const en = [];                 // outward unit normal of segment i -> i+1
+    for (let i = 0; i < n; i++) {
+      const a = outline2D[i], b = outline2D[(i + 1) % n];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-7) return null;
+      en.push({ x: sgn * dy / len, y: -sgn * dx / len });
+    }
+    const inward = [];
+    for (let i = 0; i < n; i++) {
+      const n1 = en[(i + n - 1) % n], n2 = en[i];
+      const k = 1 + n1.x * n2.x + n1.y * n2.y;
+      if (k < 0.35) return null; // sharper than ~130° turn: mitre would spike
+      inward.push({ x: -(n1.x + n2.x) / k, y: -(n1.y + n2.y) / k });
+    }
+    // Fold check at the deepest inset: every segment must keep its direction.
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const a = outline2D[i], b = outline2D[j];
+      const ax = a.x + inward[i].x * maxInset, ay = a.y + inward[i].y * maxInset;
+      const bx = b.x + inward[j].x * maxInset, by = b.y + inward[j].y * maxInset;
+      if ((bx - ax) * (b.x - a.x) + (by - ay) * (b.y - a.y) <= 0) return null;
+    }
+    // Spatial hash (1 mm cells) -> nearest contour point within 0.5 mm.
+    const cell = 0.001, grid = new Map();
+    const key = (cx, cy) => cx + ',' + cy;
+    for (let i = 0; i < n; i++) {
+      const k2 = key(Math.floor(outline2D[i].x / cell), Math.floor(outline2D[i].y / cell));
+      if (!grid.has(k2)) grid.set(k2, []);
+      grid.get(k2).push(i);
+    }
+    return (x, y) => {
+      const cx = Math.floor(x / cell), cy = Math.floor(y / cell);
+      let best = -1, bestD = 0.0005 * 0.0005;
+      for (let ox = -1; ox <= 1; ox++) {
+        for (let oy = -1; oy <= 1; oy++) {
+          const list = grid.get(key(cx + ox, cy + oy));
+          if (!list) continue;
+          for (const idx of list) {
+            const dx = outline2D[idx].x - x, dy = outline2D[idx].y - y;
+            const d = dx * dx + dy * dy;
+            if (d < bestD) { bestD = d; best = idx; }
+          }
+        }
+      }
+      return best >= 0 ? inward[best] : null;
+    };
   }
 
   // Detect if an object has a ~90° X rotation that swaps Y↔Z axes

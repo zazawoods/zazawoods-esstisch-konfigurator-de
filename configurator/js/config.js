@@ -50,6 +50,9 @@ export const TABLE_SHAPES = [
     meshPrefix: ['Danish_Oval', 'Danish'],
     defaultLength: 240,
     defaultWidth: 120,
+    // The GLB tabletop is natively 240.6 x 109.4 cm. Without this the table
+    // was drawn ~10 cm narrower than the selected width.
+    modelWidth: 109.4,
     // Exactly the 9 sizes sold on the ZW product page.
     fixedDimensions: [
       [180, 90], [200, 100], [220, 100], [240, 120],
