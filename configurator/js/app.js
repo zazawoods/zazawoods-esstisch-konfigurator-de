@@ -2425,7 +2425,7 @@ class TableConfigurator {
         const steps = this.getExtrudeSteps();
         const mmToLocal = 0.001 / ws.x;
         geometry = new THREE.ExtrudeGeometry(s, this.tabletopExtrudeOpts(thickness, mmToLocal, steps));
-        this.applyEdgeProfile(geometry, thickness, mmToLocal);
+        this.applyEdgeProfile(geometry, thickness, mmToLocal, this.shapeContour(s, mmToLocal));
         geometry.rotateX(-Math.PI / 2);
         geometry.translate(cx, bottomY + thickness, cz);
       }
@@ -2452,7 +2452,7 @@ class TableConfigurator {
         const steps = this.getExtrudeSteps();
         const mmToLocal = 0.001 / ws.x;
         geometry = new THREE.ExtrudeGeometry(s, this.tabletopExtrudeOpts(thickness, mmToLocal, steps));
-        this.applyEdgeProfile(geometry, thickness, mmToLocal);
+        this.applyEdgeProfile(geometry, thickness, mmToLocal, this.shapeContour(s, mmToLocal));
         geometry.rotateX(-Math.PI / 2);
         geometry.translate(cx, bottomY + thickness, cz);
       }
@@ -2529,7 +2529,7 @@ class TableConfigurator {
 
     const steps = this.getExtrudeSteps();
     const geometry = new THREE.ExtrudeGeometry(topShape, this.tabletopExtrudeOpts(thickness, 0.001, steps));
-    this.applyEdgeProfile(geometry, thickness, 0.001);
+    this.applyEdgeProfile(geometry, thickness, 0.001, this.shapeContour(topShape, 0.001));
     geometry.rotateX(-Math.PI / 2);
     geometry.translate(0, legTopY + thickness, 0);
 
@@ -2599,7 +2599,7 @@ class TableConfigurator {
     const legTopY = this.originalTopBox ? this.originalTopBox.minY : 0;
     const steps = this.getExtrudeSteps();
     const geometry = new THREE.ExtrudeGeometry(topShape, this.tabletopExtrudeOpts(thickness, 0.001, steps));
-    this.applyEdgeProfile(geometry, thickness, 0.001);
+    this.applyEdgeProfile(geometry, thickness, 0.001, this.shapeContour(topShape, 0.001));
     geometry.rotateX(-Math.PI / 2);
     geometry.translate(0, legTopY + thickness, 0);
 
@@ -4146,9 +4146,14 @@ class TableConfigurator {
       // last centimetres.
       const shapeExtraCm = this.getLegEdgeDistance(this.state.length, shape.id) -
                            this.getLegEdgeDistance(this.state.length, 'rectangle');
-      const maxPullM = Math.max(0, (5 - shapeExtraCm) / 100);
+      // Owner decision 2026-11-16: a leg that fits under the top must be
+      // offered, so the clamp now pulls as far as needed (was capped at 5cm
+      // from the Rechteck stance, the remainder was hidden from the picker).
+      // Hard stop at 45cm so two frames can never be pushed through each other.
+      void shapeExtraCm;
+      const maxPullM = 0.45;
       let totalShift = 0;
-      for (let iter = 0; iter < 6; iter++) {
+      for (let iter = 0; iter < 10; iter++) {
         let need = measureNeed();
         if (need <= 0.001) break;
         if (totalShift + need > maxPullM) need = Math.max(0, maxPullM - totalShift);
@@ -4361,9 +4366,9 @@ class TableConfigurator {
     // Perpendicular-inset lookup (only for the bevelled 'facet' edge and only
     // when the caller supplied the contour and the inset cannot fold it).
     let inwardAt = null;
-    if (edge === 'facet' && outline2D && outline2D.length >= 8) {
+    if (edge === 'facet' && outline2D && outline2D.length >= 3) {
       const maxInset = Math.max(0, totalMm - 15) / Math.tan(25 * Math.PI / 180) * mmToLocal;
-      inwardAt = this.buildInwardNormalLookup(outline2D, maxInset);
+      inwardAt = this.buildInwardNormalLookup(outline2D, maxInset, mmToLocal);
     }
 
     // For boomstam: precompute XY centroid to blend effect (full on long sides, zero on kopse kanten)
@@ -4501,27 +4506,43 @@ class TableConfigurator {
     geometry.computeVertexNormals();
   }
 
+  // The contour THREE.ExtrudeGeometry extrudes for a THREE.Shape (default 12
+  // curve segments), without repeated points. Used to bevel procedural tops
+  // (Rechteck, Halbrund) perpendicular to the edge as well.
+  shapeContour(shape, mmToLocal = 0.001) {
+    const raw = shape.extractPoints(12).shape;
+    const eps = 1e-3 * mmToLocal;
+    const pts = [];
+    for (const p of raw) {
+      const prev = pts[pts.length - 1];
+      if (!prev || Math.hypot(p.x - prev.x, p.y - prev.y) > eps) pts.push(new THREE.Vector2(p.x, p.y));
+    }
+    while (pts.length > 3 && pts[0].distanceTo(pts[pts.length - 1]) <= eps) pts.pop();
+    return pts;
+  }
+
   // For a closed contour (ordered Vector2 list) return a function
   // (x, y) -> inward mitre vector at the nearest contour point, i.e. the vector
   // that moves the point `d` inward perpendicular to BOTH adjacent segments when
   // scaled by d. Returns null (caller falls back to the radial push) when the
   // contour is degenerate or when an inset of maxInset would fold it (corner
   // radius smaller than the inset).
-  buildInwardNormalLookup(outline2D, maxInset) {
+  buildInwardNormalLookup(outline2D, maxInset, mmToLocal = 0.001) {
     const n = outline2D.length;
+    if (n < 3) return null;
     let area = 0;
     for (let i = 0; i < n; i++) {
       const a = outline2D[i], b = outline2D[(i + 1) % n];
       area += a.x * b.y - b.x * a.y;
     }
-    if (Math.abs(area) < 1e-9) return null;
+    if (Math.abs(area) < 1e-3 * mmToLocal * mmToLocal) return null;
     const sgn = area > 0 ? 1 : -1; // +1 = counter-clockwise
     const en = [];                 // outward unit normal of segment i -> i+1
     for (let i = 0; i < n; i++) {
       const a = outline2D[i], b = outline2D[(i + 1) % n];
       const dx = b.x - a.x, dy = b.y - a.y;
       const len = Math.hypot(dx, dy);
-      if (len < 1e-7) return null;
+      if (len < 1e-4 * mmToLocal) return null;
       en.push({ x: sgn * dy / len, y: -sgn * dx / len });
     }
     const inward = [];
@@ -4540,7 +4561,7 @@ class TableConfigurator {
       if ((bx - ax) * (b.x - a.x) + (by - ay) * (b.y - a.y) <= 0) return null;
     }
     // Spatial hash (1 mm cells) -> nearest contour point within 0.5 mm.
-    const cell = 0.001, grid = new Map();
+    const cell = mmToLocal, grid = new Map();
     const key = (cx, cy) => cx + ',' + cy;
     for (let i = 0; i < n; i++) {
       const k2 = key(Math.floor(outline2D[i].x / cell), Math.floor(outline2D[i].y / cell));
@@ -4549,7 +4570,7 @@ class TableConfigurator {
     }
     return (x, y) => {
       const cx = Math.floor(x / cell), cy = Math.floor(y / cell);
-      let best = -1, bestD = 0.0005 * 0.0005;
+      let best = -1, bestD = (0.5 * mmToLocal) * (0.5 * mmToLocal);
       for (let ox = -1; ox <= 1; ox++) {
         for (let oy = -1; oy <= 1; oy++) {
           const list = grid.get(key(cx + ox, cy + oy));
@@ -5105,51 +5126,37 @@ class TableConfigurator {
     // most 5cm from its Rechteck position; combinations that poke past the
     // tabletop outline at that stance are removed from the picker. Thorn is
     // additionally hidden on Organisch because it has no 3D model there.
-    const FRAME_SATZ = [
-      'Drone Tischbeine (Satz)', 'U Tischgestell (Satz)', 'U Tischgestell (M) (Satz)',
-      'U Tischgestell (schmal) (Satz)', 'X Tischgestell (Satz)', 'Trapezium Tischgestell (Satz)',
-      'Stahlwangen Tischgestell (Satz)', 'Stahlwangen Tischgestell (S) (Satz)',
-      'Ovale Tischgestelle aus Eiche-Stäbchenholz (Satz)',
-      'Butterfly Tischbeine aus Eichenholz (Satz) (A)',
-      'Halbrunde Tischbeine aus Eichenholz (Satz) (A)'
-    ];
-    const ORGANIC_ALL = FRAME_SATZ.concat(['Thorn Tischgestelle (Satz)']);
+    // Re-audit 2026-11-16 (owner request: offer every leg that fits). The overhang
+    // clamp now pulls Satz/pair legs in as far as needed (no 5cm cap), and the
+    // Halboval top is drawn at its real width, so almost every former entry
+    // became unnecessary. Full headless audit of all shapes x sizes x legs
+    // (every leg vertex vs the tabletop hull, 0.5cm tolerance, plus a check that
+    // the model shown is the leg that was picked) leaves only:
+    //   - Organisch: X and Thorn have no model of their own there (U-schmal /
+    //     Spider would be shown instead) -> hidden at every size.
+    //   - Organisch 200: three single-column legs that cannot be pulled in still
+    //     poke past the rim (Doppel V 5.0cm, Ovale Holzsäule 3.8cm, Felix 2.4cm).
+    //   - Bootsform: Vario/Doppel V/Felix have no mesh in Bootsform.glb.
+    //   - Rund 100: Spider Gestell (rund) is 0.9cm wider than the top.
+    const NO_MODEL_ON_ORGANIC = ['X Tischgestell (Satz)', 'Thorn Tischgestelle (Satz)'];
     const HIDE_LEGS_BY_SHAPE_LENGTH = {
-      'oval': {
-        180: ['Thorn Tischgestelle (Satz)', 'Drone Tischbeine (Satz)', 'U Tischgestell (Satz)', 'U Tischgestell (M) (Satz)', 'U Tischgestell (schmal) (Satz)', 'X Tischgestell (Satz)', 'A Tischgestell (Satz)', 'Trapezium Tischgestell (Satz)', 'Stahlwangen Tischgestell (Satz)', 'Ovale Tischgestelle aus Eiche-Stäbchenholz (Satz)', 'Butterfly Tischbeine aus Eichenholz (Satz) (A)', 'Butterfly Tischgestell (Satz)'],
-        200: ['Thorn Tischgestelle (Satz)', 'U Tischgestell (M) (Satz)', 'X Tischgestell (Satz)', 'A Tischgestell (Satz)', 'Ovale Tischgestelle aus Eiche-Stäbchenholz (Satz)', 'Butterfly Tischgestell (Satz)']
-      },
-      'danish-oval': {
-        180: ['Thorn Tischgestelle (Satz)', 'Drone Tischbeine (Satz)', 'U Tischgestell (Satz)', 'U Tischgestell (M) (Satz)', 'U Tischgestell (schmal) (Satz)', 'X Tischgestell (Satz)', 'A Tischgestell (Satz)', 'Trapezium Tischgestell (Satz)', 'Stahlwangen Tischgestell (Satz)', 'Stahlwangen Tischgestell (S) (Satz)', 'Ovale Tischgestelle aus Eiche-Stäbchenholz (Satz)', 'Butterfly Tischbeine aus Eichenholz (Satz) (A)', 'Halbrunde Tischbeine aus Eichenholz (Satz) (A)', 'Butterfly Tischgestell (Satz)'],
-        200: ['Thorn Tischgestelle (Satz)', 'U Tischgestell (Satz)', 'U Tischgestell (M) (Satz)', 'U Tischgestell (schmal) (Satz)', 'X Tischgestell (Satz)', 'A Tischgestell (Satz)', 'Trapezium Tischgestell (Satz)', 'Ovale Tischgestelle aus Eiche-Stäbchenholz (Satz)', 'Butterfly Tischgestell (Satz)'],
-        220: ['Thorn Tischgestelle (Satz)', 'U Tischgestell (M) (Satz)', 'Butterfly Tischgestell (Satz)']
-      },
       'organic': {
-        // A/X have no internal mesh on Organisch — the external pair pokes past
-        // the asymmetric rim at every size (audit 2026-07-11) → hidden everywhere.
-        // Prod overhang audit 2026-08-30 (headless click-through of every leg
-        // at every size, vertices vs tabletop hull): at 200cm the new metal
-        // legs poke past the asymmetric rim (Doppel V 5.0cm, Felix 2.4cm,
-        // Butterfly Satz 2.4cm) -> hidden at 200 only; clean from 220 up.
-        // Audit 2026-08-31 (corrected hull sampling): the standalone Ovale
-        // Holzsäule (external GLB, wide oval foot) pokes 3.8cm past the rim at
-        // 200 as well -> hidden at 200 only.
-        200: ORGANIC_ALL.concat(['A Tischgestell (Satz)', 'Doppel V-Tischgestell', 'Felix Tischgestell', 'Butterfly Tischgestell (Satz)', 'Ovale Holzsäule aus Stäbchenholz, Eiche']),
-        220: ORGANIC_ALL.concat(['A Tischgestell (Satz)']),
-        240: ORGANIC_ALL.concat(['A Tischgestell (Satz)']),
-        260: ORGANIC_ALL.concat(['A Tischgestell (Satz)']),
-        280: ['Thorn Tischgestelle (Satz)', 'U Tischgestell (M) (Satz)', 'Butterfly Tischbeine aus Eichenholz (Satz) (A)', 'A Tischgestell (Satz)', 'X Tischgestell (Satz)'],
-        300: ['Thorn Tischgestelle (Satz)', 'A Tischgestell (Satz)', 'X Tischgestell (Satz)']
+        200: NO_MODEL_ON_ORGANIC.concat(['Doppel V-Tischgestell', 'Felix Tischgestell', 'Ovale Holzsäule aus Stäbchenholz, Eiche']),
+        220: NO_MODEL_ON_ORGANIC.slice(),
+        240: NO_MODEL_ON_ORGANIC.slice(),
+        260: NO_MODEL_ON_ORGANIC.slice(),
+        280: NO_MODEL_ON_ORGANIC.slice(),
+        300: NO_MODEL_ON_ORGANIC.slice()
       },
       'bootsform': (() => {
-        // Vario/Doppel V/Felix (Thore/Vedo/Stative) have no mesh inside
-        // Bootsform.glb (audit 2026-08-30) — hide their cards on every size.
         const NO_MESH_ON_BOOTSFORM = ['Vario Tischgestell', 'Doppel V-Tischgestell', 'Felix Tischgestell'];
         const m = {};
         [180, 200, 220, 240, 260, 280, 300, 350, 400].forEach(l => { m[l] = NO_MESH_ON_BOOTSFORM.slice(); });
-        m[180].push('Butterfly Tischbeine aus Eichenholz (Satz) (A)');
         return m;
-      })()
+      })(),
+      'round': {
+        100: ['Spider Gestell (rund)']
+      }
     };
     const hideList = HIDE_LEGS_BY_SHAPE_LENGTH[this.state.shape]?.[this.state.length] || [];
     if (hideList.length > 0) {
